@@ -13,3 +13,6 @@ media/
 
 # internal planning artifacts, not part of the published work
 docs/superpowers/
+
+# the knowledge graph is derived, not authored
+graphify-out/
