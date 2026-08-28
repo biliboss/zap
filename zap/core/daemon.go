@@ -27,7 +27,7 @@ type Backend interface {
 	Presence(ctx context.Context, from string, available bool) error
 	Status(ctx context.Context, req SendRequest) (SendResult, error)
 	Subscribe(from string) (<-chan Event, func())
-	Messages(ctx context.Context, from, chat string, limit int) ([]Event, error)
+	Messages(ctx context.Context, q MessagesQuery) ([]Event, error)
 	Sessions(ctx context.Context, req SessionQuery) ([]Session, error)
 	SyncChat(ctx context.Context, req SyncRequest) (SyncResult, error)
 	Contacts(ctx context.Context, from, query string) ([]Contact, error)
@@ -46,6 +46,10 @@ type Account struct {
 }
 
 type SendRequest struct {
+	// ID makes a send idempotent: WhatsApp keys a message by it, so a retried
+	// request after a network timeout delivers once, not twice. A consumer
+	// derives it from whatever it already has (the inbound id it is answering).
+	ID   string `json:"id,omitempty"`
 	From string `json:"from,omitempty"`
 	To   string `json:"to,omitempty"`
 	Text string `json:"text"`
@@ -65,6 +69,16 @@ type PairEvent struct {
 	QR    string `json:"qr,omitempty"`
 	JID   string `json:"jid,omitempty"`
 	Error string `json:"error,omitempty"`
+}
+
+// MessagesQuery reads the store. Since turns it into a CURSOR: a consumer that
+// missed events while disconnected asks for everything after the last id it
+// saw, because the event bus drops for slow readers and the store never does.
+type MessagesQuery struct {
+	From  string
+	Chat  string
+	Limit int
+	Since time.Time
 }
 
 // TypingRequest drives the "composing…" bubble on the other side.
@@ -232,6 +246,7 @@ func (d *Daemon) routes() http.Handler {
 	mux.HandleFunc("GET /groups", d.handleGroups)
 	mux.HandleFunc("POST /groups", d.handleGroupAct)
 	mux.HandleFunc("GET /log", d.handleLog)
+	mux.HandleFunc("POST /fake", d.handleFake)
 	return d.logging(mux)
 }
 
@@ -380,7 +395,16 @@ func (d *Daemon) handleTail(w http.ResponseWriter, r *http.Request) {
 func (d *Daemon) handleMessages(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	limit, _ := strconv.Atoi(q.Get("limit"))
-	msgs, err := d.Backend.Messages(r.Context(), q.Get("from"), q.Get("chat"), limit)
+	query := MessagesQuery{From: q.Get("from"), Chat: q.Get("chat"), Limit: limit}
+	if raw := q.Get("since"); raw != "" {
+		seconds, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("since must be unix seconds: %w", err))
+			return
+		}
+		query.Since = time.Unix(seconds, 0)
+	}
+	msgs, err := d.Backend.Messages(r.Context(), query)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
@@ -477,6 +501,29 @@ func (d *Daemon) handleGroupAct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, group)
+}
+
+// handleFake is registered unconditionally, on every daemon — the point is
+// that hitting it against a real daemon answers with this sentence, not a
+// bare 404.
+func (d *Daemon) handleFake(w http.ResponseWriter, r *http.Request) {
+	f, ok := d.Backend.(*Fake)
+	if !ok {
+		writeErr(w, http.StatusNotFound,
+			errors.New("this daemon is real — fake verbs only exist under `zap serve --fake`"))
+		return
+	}
+	var req FakeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	res, err := f.Act(r.Context(), req)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 func (d *Daemon) handleLog(w http.ResponseWriter, r *http.Request) {

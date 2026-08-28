@@ -15,7 +15,7 @@ func Schema() map[string]any {
 	models := []any{
 		Account{}, Contact{}, SendRequest{}, SendResult{}, PairEvent{},
 		Event{}, Session{}, Group{}, GroupMember{}, GroupRequest{},
-		SyncRequest{}, SyncResult{}, Call{},
+		SyncRequest{}, SyncResult{}, Call{}, FakeRequest{},
 	}
 	defs := map[string]any{}
 	for _, m := range models {

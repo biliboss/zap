@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -56,6 +57,8 @@ func main() {
 		err = cmdSend(ctx, os.Args[2:])
 	case "tail":
 		err = cmdTail(ctx, os.Args[2:])
+	case "on":
+		err = cmdOn(ctx, os.Args[2:])
 	case "groups":
 		err = cmdGroups(ctx, os.Args[2:])
 	case "group":
@@ -78,6 +81,8 @@ func main() {
 		err = cmdSessions(ctx, os.Args[2:])
 	case "sync":
 		err = cmdSync(ctx, os.Args[2:])
+	case "fake":
+		err = cmdFake(ctx, os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 		return
@@ -105,12 +110,14 @@ func usage() {
   zap use [<num>]                 set (or print) the account --from defaults to
   zap schema                      json schema of every record zap emits
   zap events                      the event catalogue, in workflow order
-  zap send --to <num>|--myself [--from <num>] [text]
+  zap send --to <num>|--myself [--from <num>] [--id <id>] [text]
   zap typing --to <num> [--off] [--audio]
                                   drive the "composing…" bubble
   zap presence [--away]           the online dot; --away lets the phone push again
   zap status <text>               post to status@broadcast, the 24h story
   zap tail [--from <num>]         stream incoming messages and receipts, ndjson
+  zap on <event>[,<event>...] [--from <num>] -- <cmd> [args...]
+                                  run cmd for each matching event, one at a time
   zap messages [--chat <num>] [--limit N] [--plain-text]
                                   read what was stored; --plain-text is 'name: message'
   zap sessions [--number <num>] [--gap 24h] [--mine] [--count] [-n N]
@@ -131,6 +138,16 @@ func usage() {
   zap group leave  <group>
 
 A <group> is its name — the one 'zap groups' prints — or its …@g.us jid.
+
+  zap serve --fake [--fake-numbers +55…,+55…]
+                                  the SAME daemon, in memory, no phone — for tests
+  zap fake contact <number> <name>
+  zap fake group <name> --with +55…,+55…
+  zap fake inbound --as <account> --from <number> <text>
+  zap fake audio  --as <account> --from <number> <file> [--text "transcrição"]
+
+Everywhere else --from is the account that ACTS. In 'zap fake inbound/audio'
+it is the person writing TO you instead — --as names the receiving account.
 
 examples
   zap send --to +5511900000000 "oi"
@@ -168,6 +185,31 @@ Paths come from $ZAP_HOME (default ~/.zap): store.db and zap.sock.
 
 // ------------------------------------------------------------------ commands
 
+// parseFlags parses flags that appear AFTER positional arguments too. Go's flag
+// package stops at the first non-flag word, so `zap group add Obra --who +55…`
+// silently dropped --who, and `zap fake group Obra --with a,b` swallowed the
+// flags into the group's name. Every verb that takes a positional needs this.
+//
+// A literal `--` ends the scan and hands the rest back untouched, which is what
+// `zap on <event> -- cmd` relies on.
+func parseFlags(fs *flag.FlagSet, args []string) ([]string, error) {
+	var positional []string
+	for {
+		if err := fs.Parse(args); err != nil {
+			return nil, err
+		}
+		rest := fs.Args()
+		if len(rest) == 0 {
+			return positional, nil
+		}
+		if rest[0] == "--" {
+			return append(positional, rest...), nil
+		}
+		positional = append(positional, rest[0])
+		args = rest[1:]
+	}
+}
+
 func cmdServe(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	sock := fs.String("socket", defaultSocket(), "unix socket path")
@@ -178,7 +220,23 @@ func cmdServe(ctx context.Context, args []string) error {
 	model := fs.String("whisper-model", core.DefaultWhisperModel, "mlx model to transcribe with")
 	sessionGap := fs.Duration("session-gap", core.DefaultSessionGap, "silence that closes a session")
 	mediaDir := fs.String("media", filepath.Join(zapHome(), "media"), "where voice notes are kept")
+	fake := fs.Bool("fake", false, "serve a fake daemon — no phone, no whatsmeow — for integration tests")
+	fakeNumbers := fs.String("fake-numbers", "+5511999999999", "comma separated fake numbers to seed --fake with")
 	fs.Parse(args)
+
+	if *fake {
+		if os.Getenv("ZAP_HOME") == "" && *sock == defaultSocket() {
+			return fmt.Errorf("refusing to run fake on the real socket — set ZAP_HOME=$(mktemp -d) or pass --socket")
+		}
+		f := core.NewFake(strings.Split(*fakeNumbers, ",")...)
+		f.SessionGap = *sessionGap
+		if err := f.StartTranscriber(ctx, &core.Transcriber{Enabled: *transcribe, Model: *model, Dir: *mediaDir}); err != nil {
+			return err
+		}
+		d := &core.Daemon{Backend: f, Socket: *sock}
+		fmt.Fprintf(os.Stderr, "zap: FAKE daemon — no phone, no whatsmeow — %d account(s) on %s\n", len(f.Accounts()), *sock)
+		return d.Serve(ctx)
+	}
 
 	core.SetHistoryWindow(*histDays, *histPerChat)
 
@@ -256,9 +314,11 @@ func cmdStatus(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("status", flag.ExitOnError)
 	sock := fs.String("socket", defaultSocket(), "unix socket path")
 	from := fs.String("from", "", "account")
-	fs.Parse(args)
-
-	text, err := textArg(fs.Args())
+	positional, err := parseFlags(fs, args)
+	if err != nil {
+		return err
+	}
+	text, err := textArg(positional)
 	if err != nil {
 		return err
 	}
@@ -326,10 +386,13 @@ func cmdSend(ctx context.Context, args []string) error {
 	sock := fs.String("socket", defaultSocket(), "unix socket path")
 	to := fs.String("to", "", "recipient number or JID")
 	myself := fs.Bool("myself", false, "send to your own chat")
+	id := fs.String("id", "", "message id — pass the same one to retry safely")
 	from := fs.String("from", "", "sending account, required when several are paired")
-	fs.Parse(args)
-
-	text, err := textArg(fs.Args())
+	positional, err := parseFlags(fs, args)
+	if err != nil {
+		return err
+	}
+	text, err := textArg(positional)
 	if err != nil {
 		return err
 	}
@@ -337,7 +400,7 @@ func cmdSend(ctx context.Context, args []string) error {
 		return fmt.Errorf("usage: zap send --to <number>|--myself [--from <number>] <text>   (or pipe the text in)")
 	}
 	var res core.SendResult
-	req := core.SendRequest{From: pickFrom(*from), To: *to, Text: text, Myself: *myself}
+	req := core.SendRequest{ID: *id, From: pickFrom(*from), To: *to, Text: text, Myself: *myself}
 	if err := core.NewClient(*sock).JSON(ctx, "POST", "/send", req, &res); err != nil {
 		return err
 	}
@@ -364,6 +427,73 @@ func cmdTail(ctx context.Context, args []string) error {
 	})
 }
 
+// cmdOn streams /tail and runs a command for each event that matches. It
+// consumes the stream on one goroutine, so calls to hook.Run are already
+// serialised — the next line is not read until the current command returns.
+func cmdOn(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("on", flag.ExitOnError)
+	sock := fs.String("socket", defaultSocket(), "unix socket path")
+	from := fs.String("from", "", "only events of this account")
+	fs.Parse(args)
+
+	rest := fs.Args()
+	dash := -1
+	for i, a := range rest {
+		if a == "--" {
+			dash = i
+			break
+		}
+	}
+	if dash == -1 || dash == 0 || dash == len(rest)-1 {
+		return fmt.Errorf("usage: zap on <event>[,<event>...] [--from <num>] -- <cmd> [args...]")
+	}
+
+	names := strings.Split(rest[0], ",")
+	var match []core.EventType
+	for _, n := range names {
+		n = strings.TrimSpace(n)
+		if n == "*" {
+			match = append(match, "*")
+			continue
+		}
+		found := false
+		for _, valid := range core.Events.All() {
+			if string(valid) == n {
+				found = true
+				break
+			}
+		}
+		if !found {
+			var all []string
+			for _, valid := range core.Events.All() {
+				all = append(all, string(valid))
+			}
+			return fmt.Errorf("zap on: unknown event %q — valid events: %s", n, strings.Join(all, ", "))
+		}
+		match = append(match, core.EventType(n))
+	}
+
+	hook := &core.Hook{Match: match, Command: rest[dash+1:]}
+
+	path := "/tail"
+	if v := pickFrom(*from); v != "" {
+		path += "?from=" + v
+	}
+	return core.NewClient(*sock).Stream(ctx, "GET", path, nil, func(line []byte) error {
+		var ev core.Event
+		if err := core.Decode(line, &ev); err != nil {
+			return err
+		}
+		if !hook.Matches(ev) {
+			return nil
+		}
+		if err := hook.Run(ctx, ev); err != nil {
+			fmt.Fprintf(os.Stderr, "zap on: %v\n", err)
+		}
+		return nil
+	})
+}
+
 func cmdMessages(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("messages", flag.ExitOnError)
 	sock := fs.String("socket", defaultSocket(), "unix socket path")
@@ -371,10 +501,18 @@ func cmdMessages(ctx context.Context, args []string) error {
 	chat := fs.String("chat", "", "only this chat (number or group jid)")
 	limit := fs.Int("limit", 50, "how many, newest first")
 	fs.IntVar(limit, "n", 50, "alias for --limit")
+	since := fs.String("since", "", "cursor: unix seconds, or a duration like 2h — reads forward, oldest first")
 	plain := fs.Bool("plain-text", false, "transcript form: 'name: message', oldest first")
 	fs.Parse(args)
 
 	path := fmt.Sprintf("/messages?limit=%d", *limit)
+	if *since != "" {
+		at, err := parseSince(*since)
+		if err != nil {
+			return err
+		}
+		path += fmt.Sprintf("&since=%d", at.Unix())
+	}
 	if v := pickFrom(*from); v != "" {
 		path += "&from=" + v
 	}
@@ -499,7 +637,10 @@ func cmdContacts(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("contacts", flag.ExitOnError)
 	sock := fs.String("socket", defaultSocket(), "unix socket path")
 	from := fs.String("from", "", "account to read")
-	fs.Parse(args)
+	positionalArgs, err := parseFlags(fs, args)
+	if err != nil {
+		return err
+	}
 
 	path := "/contacts"
 	sep := "?"
@@ -507,7 +648,7 @@ func cmdContacts(ctx context.Context, args []string) error {
 		path += sep + "from=" + v
 		sep = "&"
 	}
-	if q := strings.Join(fs.Args(), " "); q != "" {
+	if q := strings.Join(positionalArgs, " "); q != "" {
 		path += sep + "q=" + url.QueryEscape(q)
 	}
 	var contacts []core.Contact
@@ -741,9 +882,10 @@ func cmdGroup(ctx context.Context, args []string) error {
 	from := fs.String("from", "", "sending account")
 	who := fs.String("who", "", "comma separated numbers")
 	reset := fs.Bool("reset", false, "link: revoke the old link")
-	fs.Parse(args)
-
-	rest := fs.Args()
+	rest, err := parseFlags(fs, args)
+	if err != nil {
+		return err
+	}
 	if len(rest) == 0 {
 		return fmt.Errorf("usage: zap group <create|info|add|remove|promote|demote|name|topic|link|leave> …")
 	}
@@ -812,12 +954,15 @@ func cmdUse(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("use", flag.ExitOnError)
 	sock := fs.String("socket", defaultSocket(), "unix socket path")
 	clear := fs.Bool("clear", false, "forget the default account")
-	fs.Parse(args)
+	positionalArgs, err := parseFlags(fs, args)
+	if err != nil {
+		return err
+	}
 
 	switch {
 	case *clear:
 		return os.Remove(defaultAccountFile())
-	case len(fs.Args()) == 0:
+	case len(positionalArgs) == 0:
 		if cur := defaultAccount(); cur != "" {
 			fmt.Println(cur)
 			return nil
@@ -826,7 +971,7 @@ func cmdUse(ctx context.Context, args []string) error {
 		return nil
 	}
 
-	want := fs.Arg(0)
+	want := positionalArgs[0]
 	var accs []core.Account
 	if err := core.NewClient(*sock).JSON(ctx, "GET", "/accounts", nil, &accs); err != nil {
 		return err
@@ -852,6 +997,73 @@ func cmdLog(ctx context.Context, args []string) error {
 		fmt.Println(string(line))
 		return nil
 	})
+}
+
+// cmdFake drives the /fake route: it exists only under `zap serve --fake`,
+// and it is a thin passthrough exactly like cmdGroup.
+func cmdFake(ctx context.Context, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: zap fake <contact|group|inbound|audio> …")
+	}
+	// The action verb comes first; parseFlags then reads flags wherever they
+	// land, so `zap fake group Obra --with a,b` does not fold the flags into
+	// the group's name.
+	action, rest0 := args[0], args[1:]
+
+	fs := flag.NewFlagSet("fake", flag.ExitOnError)
+	sock := fs.String("socket", defaultSocket(), "unix socket path")
+	as := fs.String("as", "", "the receiving account")
+	from := fs.String("from", "", "the person writing to you (inbound/audio), or the acting account (contact/group)")
+	with := fs.String("with", "", "comma separated group members")
+	text := fs.String("text", "", "message text, or a transcript to short-circuit whisper")
+	positionalArgs, err := parseFlags(fs, rest0)
+	if err != nil {
+		return err
+	}
+
+	rest := append([]string{action}, positionalArgs...)
+	req := core.FakeRequest{Action: action, From: pickFrom(*as), Text: *text}
+	if *with != "" {
+		req.Who = strings.Split(*with, ",")
+	}
+	switch req.Action {
+	case "contact":
+		if len(rest) < 3 {
+			return fmt.Errorf("usage: zap fake contact <number> <name>")
+		}
+		req.Number, req.Name = rest[1], strings.Join(rest[2:], " ")
+	case "group":
+		if len(rest) < 2 {
+			return fmt.Errorf("usage: zap fake group <name> --with +55…,+55…")
+		}
+		req.Name = strings.Join(rest[1:], " ")
+	case "inbound":
+		req.Number = *from
+		if req.Number == "" {
+			return fmt.Errorf("usage: zap fake inbound --as <account> --from <number> <text>")
+		}
+		if len(rest) > 1 {
+			req.Text = strings.Join(rest[1:], " ")
+		}
+	case "audio":
+		req.Number = *from
+		if req.Number == "" || len(rest) < 2 {
+			return fmt.Errorf("usage: zap fake audio --as <account> --from <number> <file> [--text <transcript>]")
+		}
+		req.Path = rest[1]
+	default:
+		return fmt.Errorf("zap fake: unknown action %q", req.Action)
+	}
+
+	var res any
+	if err := core.NewClient(*sock).JSON(ctx, "POST", "/fake", req, &res); err != nil {
+		return err
+	}
+	if piped() {
+		return emitJSON(res)
+	}
+	fmt.Printf("%+v\n", res)
+	return nil
 }
 
 // pickFrom resolves which account acts: the flag wins, then `zap use`, then the
@@ -881,6 +1093,19 @@ func digitsOnly(s string) string {
 		}
 	}
 	return b.String()
+}
+
+// parseSince takes a unix timestamp or a duration ago, because a cursor is
+// usually "since the last id I saw" but a human types "since 2h".
+func parseSince(raw string) (time.Time, error) {
+	if seconds, err := strconv.ParseInt(raw, 10, 64); err == nil {
+		return time.Unix(seconds, 0), nil
+	}
+	ago, err := time.ParseDuration(raw)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("--since takes unix seconds or a duration like 2h: %q", raw)
+	}
+	return time.Now().Add(-ago), nil
 }
 
 func truncate(s string, n int) string {

@@ -125,7 +125,11 @@ func (w *WhatsApp) Send(ctx context.Context, req SendRequest) (SendResult, error
 		return SendResult{}, err
 	}
 	msg := &waE2E.Message{Conversation: proto.String(req.Text)}
-	resp, err := acc.cli.SendMessage(ctx, to, msg)
+	var extra []whatsmeow.SendRequestExtra
+	if req.ID != "" {
+		extra = append(extra, whatsmeow.SendRequestExtra{ID: req.ID})
+	}
+	resp, err := acc.cli.SendMessage(ctx, to, msg, extra...)
 	if err != nil {
 		return SendResult{}, err
 	}
@@ -315,22 +319,30 @@ func (w *WhatsApp) remember(ev Event) {
 	}
 }
 
-func (w *WhatsApp) Messages(ctx context.Context, from, chat string, limit int) ([]Event, error) {
-	acc, account, err := w.pick(from)
+func (w *WhatsApp) Messages(ctx context.Context, q MessagesQuery) ([]Event, error) {
+	acc, account, err := w.pick(q.From)
 	if err != nil {
 		return nil, err
 	}
-	if limit <= 0 {
-		limit = 50
+	if q.Limit <= 0 {
+		q.Limit = 50
 	}
 	query := `SELECT chat, id, sender, from_me, ts, text FROM messages WHERE account = ?`
 	args := []any{account}
-	if chat != "" {
+	if q.Chat != "" {
 		query += ` AND chat LIKE ?`
-		args = append(args, "%"+digits(chat)+"%")
+		args = append(args, "%"+digits(q.Chat)+"%")
 	}
-	query += ` ORDER BY ts DESC LIMIT ?`
-	args = append(args, limit)
+	// A cursor reads FORWARD: oldest first, so the consumer can advance through
+	// a backlog page by page. Without Since the reader wants the newest, so the
+	// order flips.
+	if !q.Since.IsZero() {
+		query += ` AND ts >= ? ORDER BY ts ASC, id ASC LIMIT ?`
+		args = append(args, q.Since.Unix(), q.Limit)
+	} else {
+		query += ` ORDER BY ts DESC LIMIT ?`
+		args = append(args, q.Limit)
+	}
 
 	rows, err := w.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -521,7 +533,7 @@ func (w *WhatsApp) Sessions(ctx context.Context, req SessionQuery) ([]Session, e
 	if req.Gap <= 0 {
 		req.Gap = DefaultSessionGap
 	}
-	msgs, err := w.Messages(ctx, req.From, req.Chat, 1<<20)
+	msgs, err := w.Messages(ctx, MessagesQuery{From: req.From, Chat: req.Chat, Limit: 1 << 20})
 	if err != nil {
 		return nil, err
 	}

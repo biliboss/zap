@@ -107,3 +107,29 @@ Verificado à mão contra o backend real: `serve` com store vazio, `accounts`,
 
 NÃO verificado, porque exige um número de verdade: o QR do `zap pair`, o envio
 de mensagem e o formato dos eventos que chegam no `zap tail`.
+
+## `--fake` é o MESMO daemon, sem telefone
+
+**`zap serve --fake` sobe o mesmo `Daemon`, as mesmas rotas, o mesmo wire —
+só troca o `Backend` de `*WhatsApp` para `*Fake` e registra uma rota a mais,
+`POST /fake`.** Um consumidor (o runtime de agente em TypeScript, um CI) fala
+com ele exatamente como falaria com o daemon real: mesmo socket unix, mesmo
+JSON, mesmo `zap tail`. `POST /fake` existe em TODO daemon, não só no fake —
+contra um daemon real ela responde a frase "this daemon is real…", nunca um
+404 mudo, porque uma asserção de tipo (`d.Backend.(*Fake)`) é mais barata e
+mais honesta que uma interface com uma implementação só.
+
+`Fake` guarda tudo em memória — contas, contatos, grupos, mensagens — e nunca
+abre sqlite. Não existe `store.db` para um `--fake` clobberar, porque não
+existe arquivo nenhum. `ZAP_HOME` continua obrigatório: sem ele, ou com
+`--socket` ainda no default, `zap serve --fake` recusa a subir, porque o
+socket real (`~/.zap/zap.sock`) nunca pode ser roubado por um processo de
+teste.
+
+O que `--fake` deliberadamente NÃO simula: persistência entre reinícios (a
+memória morre com o processo), um bundle de histórico respondendo `SyncChat`
+(a resposta é sempre só o recibo, como no daemon real), confirmações de
+entrega/leitura, o sweeper de `session_closed`, mídia além de áudio, e
+injeção de latência ou falha. `zap fake contact|group|inbound|audio` cobre o
+que um consumidor precisa para montar um cenário: um contato, um grupo, uma
+mensagem chegando, um áudio (com `--text` pulando o whisper de verdade).

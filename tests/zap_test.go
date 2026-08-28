@@ -3,6 +3,7 @@ package test
 import (
 	"context"
 	"os"
+	"strings"
 
 	"path/filepath"
 	"testing"
@@ -10,75 +11,14 @@ import (
 	"zap/core"
 )
 
-// stubBackend stands in for whatsmeow so the wire protocol is checkable without
-// a paired phone.
-type stubBackend struct {
-	sent   chan core.SendRequest
-	events chan core.Event
-}
-
-func (s *stubBackend) Accounts() []core.Account {
-	return []core.Account{{JID: "5511999999999@s.whatsapp.net", PushName: "bili", Connected: true}}
-}
-
-func (s *stubBackend) Send(_ context.Context, req core.SendRequest) (core.SendResult, error) {
-	s.sent <- req
-	return core.SendResult{ID: "3EB0", From: "5511999999999@s.whatsapp.net", Timestamp: time.Unix(0, 0).UTC()}, nil
-}
-
-func (s *stubBackend) Pair(_ context.Context, emit func(core.PairEvent) error) error {
-	if err := emit(core.PairEvent{QR: "2@abc"}); err != nil {
-		return err
-	}
-	return emit(core.PairEvent{JID: "5511999999999@s.whatsapp.net"})
-}
-
-func (s *stubBackend) Logout(context.Context, string) error             { return nil }
-func (s *stubBackend) Typing(context.Context, core.TypingRequest) error { return nil }
-func (s *stubBackend) Presence(context.Context, string, bool) error     { return nil }
-func (s *stubBackend) Status(_ context.Context, r core.SendRequest) (core.SendResult, error) {
-	return core.SendResult{ID: "STATUS", Timestamp: time.Unix(0, 0).UTC()}, nil
-}
-
-func (s *stubBackend) Subscribe(from string) (<-chan core.Event, func()) {
-	return s.events, func() {}
-}
-
-func (s *stubBackend) Messages(context.Context, string, string, int) ([]core.Event, error) {
-	return []core.Event{{Account: "5511999999999@s.whatsapp.net", Type: "message", Chat: "x@s.whatsapp.net", ID: "A", Text: "guardada"}}, nil
-}
-
-func (s *stubBackend) SyncChat(_ context.Context, req core.SyncRequest) (core.SyncResult, error) {
-	return core.SyncResult{Chat: req.Chat, Requested: req.Count, Anchor: "A"}, nil
-}
-
-func (s *stubBackend) Sessions(context.Context, core.SessionQuery) ([]core.Session, error) {
-	return []core.Session{{Chat: "x@s.whatsapp.net", Messages: 3}}, nil
-}
-
-func (s *stubBackend) Contacts(context.Context, string, string) ([]core.Contact, error) {
-	return []core.Contact{{Number: "+5511999999999", JID: "5511999999999@s.whatsapp.net", Name: "Fulano"}}, nil
-}
-
-func (s *stubBackend) QueueStats(context.Context) ([]core.QueueStat, error) {
-	return []core.QueueStat{{State: "pending", Count: 2}}, nil
-}
-
-func (s *stubBackend) Retry(context.Context) (int, error) { return 2, nil }
-
-func (s *stubBackend) Groups(context.Context, string) ([]core.Group, error) {
-	return []core.Group{{JID: "120363@g.us", Name: "obra", Participants: []core.GroupMember{{Number: "+5511999999999", Admin: true}}}}, nil
-}
-
-func (s *stubBackend) GroupAct(_ context.Context, req core.GroupRequest) (core.Group, error) {
-	return core.Group{JID: "120363@g.us", Name: req.Action}, nil
-}
-
+// TestSocketRoundTrip exercises the wire protocol against core.NewFake — the
+// code that ships, not a stub — so the shapes tested here are the shapes a
+// consumer actually gets.
 func TestSocketRoundTrip(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	back := &stubBackend{sent: make(chan core.SendRequest, 1), events: make(chan core.Event, 1)}
+	back := core.NewFake("+5511999999999")
 	socket := filepath.Join(t.TempDir(), "zap.sock")
 	d := &core.Daemon{Backend: back, Socket: socket}
 	go d.Serve(ctx)
@@ -102,11 +42,21 @@ func TestSocketRoundTrip(t *testing.T) {
 		if err := cli.JSON(ctx, "POST", "/send", req, &res); err != nil {
 			t.Fatal(err)
 		}
-		if res.ID != "3EB0" {
+		if res.ID == "" {
 			t.Fatalf("got %+v", res)
 		}
-		if got := <-back.sent; got.To != req.To || got.Text != "oi" {
-			t.Fatalf("backend saw %+v", got)
+		var msgs []core.Event
+		if err := cli.JSON(ctx, "GET", "/messages", nil, &msgs); err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, m := range msgs {
+			if m.ID == res.ID {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("sent message %s not reported by /messages: %+v", res.ID, msgs)
 		}
 	})
 
@@ -129,19 +79,30 @@ func TestSocketRoundTrip(t *testing.T) {
 	})
 
 	t.Run("groups", func(t *testing.T) {
-		var groups []core.Group
-		if err := cli.JSON(ctx, "GET", "/groups", nil, &groups); err != nil {
-			t.Fatal(err)
-		}
-		if len(groups) != 1 || !groups[0].Participants[0].Admin {
-			t.Fatalf("got %+v", groups)
-		}
 		var g core.Group
-		if err := cli.JSON(ctx, "POST", "/groups", core.GroupRequest{Action: "add", Group: "obra"}, &g); err != nil {
+		create := core.GroupRequest{From: "+5511999999999", Action: "create", Name: "obra", Who: []string{"+5511911111111", "+5511922222222"}}
+		if err := cli.JSON(ctx, "POST", "/groups", create, &g); err != nil {
 			t.Fatal(err)
 		}
-		if g.Name != "add" {
-			t.Fatalf("backend saw %+v", g)
+		if len(g.Participants) != 2 {
+			t.Fatalf("got %+v", g)
+		}
+
+		var added core.Group
+		add := core.GroupRequest{From: "+5511999999999", Action: "add", Group: g.JID, Who: []string{"+5511933333333"}}
+		if err := cli.JSON(ctx, "POST", "/groups", add, &added); err != nil {
+			t.Fatal(err)
+		}
+		if len(added.Participants) != 3 {
+			t.Fatalf("got %+v", added)
+		}
+
+		var groups []core.Group
+		if err := cli.JSON(ctx, "GET", "/groups?from=+5511999999999", nil, &groups); err != nil {
+			t.Fatal(err)
+		}
+		if len(groups) != 1 {
+			t.Fatalf("got %+v", groups)
 		}
 	})
 
@@ -178,7 +139,6 @@ func TestSocketRoundTrip(t *testing.T) {
 	})
 
 	t.Run("tail carries the account", func(t *testing.T) {
-		back.events <- core.Event{Account: "5511999999999@s.whatsapp.net", Type: "message", Text: "eae"}
 		streamCtx, stop := context.WithCancel(ctx)
 		defer stop()
 
@@ -192,6 +152,13 @@ func TestSocketRoundTrip(t *testing.T) {
 			stop()
 			return nil
 		})
+		time.Sleep(200 * time.Millisecond) // let the reader subscribe
+
+		var res core.SendResult
+		req := core.SendRequest{From: "+5511999999999", To: "+5511988888888", Text: "eae"}
+		if err := cli.JSON(ctx, "POST", "/send", req, &res); err != nil {
+			t.Fatal(err)
+		}
 		select {
 		case ev := <-got:
 			if ev.Account == "" || ev.Text != "eae" {
@@ -208,7 +175,7 @@ func TestSecondDaemonRefused(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	back := &stubBackend{sent: make(chan core.SendRequest, 1), events: make(chan core.Event, 1)}
+	back := core.NewFake("+5511999999999")
 	socket := filepath.Join(t.TempDir(), "zap.sock")
 	go (&core.Daemon{Backend: back, Socket: socket}).Serve(ctx)
 	waitUp(t, ctx, core.NewClient(socket))
@@ -217,6 +184,209 @@ func TestSecondDaemonRefused(t *testing.T) {
 	if err := second.Serve(ctx); err == nil {
 		t.Fatal("second daemon took over a live socket")
 	}
+}
+
+// TestFakeInbound proves an injected message reaches both the live stream and
+// the store, decorated from a contact created first.
+func TestFakeInbound(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	back := core.NewFake("+5511999999999")
+	socket := filepath.Join(t.TempDir(), "zap.sock")
+	go (&core.Daemon{Backend: back, Socket: socket}).Serve(ctx)
+	cli := core.NewClient(socket)
+	waitUp(t, ctx, cli)
+
+	if err := cli.JSON(ctx, "POST", "/fake", core.FakeRequest{Action: "contact", Number: "+5511900000000", Name: "Ana"}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	streamCtx, stop := context.WithCancel(ctx)
+	defer stop()
+	got := make(chan core.Event, 1)
+	go cli.Stream(streamCtx, "GET", "/tail", nil, func(line []byte) error {
+		var ev core.Event
+		if err := core.Decode(line, &ev); err != nil {
+			return err
+		}
+		if ev.Type == core.Events.Message.Received {
+			got <- ev
+			stop()
+		}
+		return nil
+	})
+	time.Sleep(200 * time.Millisecond)
+
+	inbound := core.FakeRequest{Action: "inbound", From: "+5511999999999", Number: "+5511900000000", Text: "oi"}
+	if err := cli.JSON(ctx, "POST", "/fake", inbound, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case ev := <-got:
+		if ev.SenderName != "Ana" || ev.SenderNumber == "" {
+			t.Fatalf("got %+v", ev)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no message_received on /tail")
+	}
+
+	var msgs []core.Event
+	if err := cli.JSON(ctx, "GET", "/messages", nil, &msgs); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, m := range msgs {
+		if m.Text == "oi" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("inbound message not in /messages: %+v", msgs)
+	}
+}
+
+// TestFakeSendAndSessions checks both directions land in the store with the
+// right from_me, and that /sessions cuts them into one session.
+func TestFakeSendAndSessions(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	back := core.NewFake("+5511999999999")
+	socket := filepath.Join(t.TempDir(), "zap.sock")
+	go (&core.Daemon{Backend: back, Socket: socket}).Serve(ctx)
+	cli := core.NewClient(socket)
+	waitUp(t, ctx, cli)
+
+	inbound := core.FakeRequest{Action: "inbound", From: "+5511999999999", Number: "+5511900000000", Text: "oi"}
+	if err := cli.JSON(ctx, "POST", "/fake", inbound, nil); err != nil {
+		t.Fatal(err)
+	}
+	var res core.SendResult
+	if err := cli.JSON(ctx, "POST", "/send", core.SendRequest{To: "+5511900000000", Text: "opa"}, &res); err != nil {
+		t.Fatal(err)
+	}
+
+	var msgs []core.Event
+	if err := cli.JSON(ctx, "GET", "/messages", nil, &msgs); err != nil {
+		t.Fatal(err)
+	}
+	var in, out int
+	for _, m := range msgs {
+		if m.FromMe {
+			out++
+		} else {
+			in++
+		}
+	}
+	if in != 1 || out != 1 {
+		t.Fatalf("want 1 in / 1 out, got %d/%d: %+v", in, out, msgs)
+	}
+
+	var sessions []core.Session
+	if err := cli.JSON(ctx, "GET", "/sessions?gap=24h", nil, &sessions); err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 1 || sessions[0].Messages != 2 {
+		t.Fatalf("want 1 session of 2 messages, got %+v", sessions)
+	}
+}
+
+// TestFakeAudio proves the whole audio_queued → audio_transcribed → text in
+// store chain works with --text, without mlx-whisper installed.
+func TestFakeAudio(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	back := core.NewFake("+5511999999999")
+	socket := filepath.Join(t.TempDir(), "zap.sock")
+	go (&core.Daemon{Backend: back, Socket: socket}).Serve(ctx)
+	cli := core.NewClient(socket)
+	waitUp(t, ctx, cli)
+
+	path := filepath.Join(t.TempDir(), "voice.ogg")
+	if err := os.WriteFile(path, []byte("fake audio bytes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	streamCtx, stop := context.WithCancel(ctx)
+	defer stop()
+	seenQueued, seenTranscribed := make(chan struct{}, 1), make(chan struct{}, 1)
+	go cli.Stream(streamCtx, "GET", "/tail", nil, func(line []byte) error {
+		var ev core.Event
+		if err := core.Decode(line, &ev); err != nil {
+			return err
+		}
+		switch ev.Type {
+		case core.Events.Audio.Queued:
+			seenQueued <- struct{}{}
+		case core.Events.Audio.Transcribed:
+			seenTranscribed <- struct{}{}
+			stop()
+		}
+		return nil
+	})
+	time.Sleep(200 * time.Millisecond)
+
+	audio := core.FakeRequest{Action: "audio", From: "+5511999999999", Number: "+5511900000000", Path: path, Text: "transcrição"}
+	if err := cli.JSON(ctx, "POST", "/fake", audio, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-seenQueued:
+	case <-time.After(5 * time.Second):
+		t.Fatal("never saw audio_queued")
+	}
+	select {
+	case <-seenTranscribed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("never saw audio_transcribed")
+	}
+
+	var msgs []core.Event
+	if err := cli.JSON(ctx, "GET", "/messages", nil, &msgs); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, m := range msgs {
+		if m.Text == "transcrição" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("transcript not in /messages: %+v", msgs)
+	}
+}
+
+// TestFakeVerbsAgainstRealDaemon proves the type assertion fails before
+// anything is dereferenced: a real daemon answers /fake with the sentence,
+// not a bare 404 and not a panic from a nil *WhatsApp.
+func TestFakeVerbsAgainstRealDaemon(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// a short dir, not t.TempDir(): this test's own name is long enough that
+	// nesting the socket under it blows the ~100 byte kernel limit.
+	dir, err := os.MkdirTemp("", "zapfake")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	socket := filepath.Join(dir, "zap.sock")
+	d := &core.Daemon{Backend: (*core.WhatsApp)(nil), Socket: socket}
+	go d.Serve(ctx)
+
+	cli := core.NewClient(socket)
+	for i := 0; i < 100; i++ {
+		err = cli.JSON(ctx, "POST", "/fake", core.FakeRequest{Action: "contact"}, nil)
+		if err != nil && strings.Contains(err.Error(), "this daemon is real") {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("want the fake-verbs-on-real-daemon sentence, got %v", err)
 }
 
 func waitUp(t *testing.T, ctx context.Context, cli *core.Client) {
@@ -277,5 +447,46 @@ func TestSchemaIsCurrent(t *testing.T) {
 	}
 	if string(got) != string(want) {
 		t.Fatal("schema.json is stale — run: zap schema > schema.json")
+	}
+}
+
+// TestHookRun proves the event reaches the command's stdin as one ndjson
+// line, without going through a shell: the command is /usr/bin/tee writing
+// to a file we can read back.
+func TestHookRun(t *testing.T) {
+	if _, err := os.Stat("/usr/bin/tee"); err != nil {
+		t.Skip("/usr/bin/tee not present on this machine")
+	}
+	dir := t.TempDir()
+	out := filepath.Join(dir, "event.ndjson")
+
+	hook := &core.Hook{
+		Match:   []core.EventType{core.Events.Message.Received},
+		Command: []string{"/usr/bin/tee", out},
+	}
+	ev := core.Event{
+		Account: "5511999999999@s.whatsapp.net",
+		Type:    core.Events.Message.Received,
+		Chat:    "5511988888888@s.whatsapp.net",
+		Sender:  "5511988888888@s.whatsapp.net",
+		Text:    "oi",
+	}
+	if !hook.Matches(ev) {
+		t.Fatal("hook should match message_received")
+	}
+	if err := hook.Run(context.Background(), ev); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	got, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("reading tee output: %v", err)
+	}
+	var decoded core.Event
+	if err := core.Decode(got, &decoded); err != nil {
+		t.Fatalf("decoding what reached the command's stdin: %v", err)
+	}
+	if decoded.Type != ev.Type || decoded.Text != ev.Text {
+		t.Fatalf("event did not round-trip through the command's stdin: got %+v", decoded)
 	}
 }

@@ -176,6 +176,45 @@
       ],
       "type": "object"
     },
+    "FakeRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "chat": {
+          "type": "string"
+        },
+        "from": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "number": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "seconds": {
+          "type": "integer"
+        },
+        "text": {
+          "type": "string"
+        },
+        "who": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "type": "object"
+    },
     "Group": {
       "additionalProperties": false,
       "properties": {
@@ -288,6 +327,9 @@
       "additionalProperties": false,
       "properties": {
         "from": {
+          "type": "string"
+        },
+        "id": {
           "type": "string"
         },
         "myself": {
