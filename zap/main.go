@@ -133,16 +133,16 @@ func usage() {
 A <group> is its name — the one 'zap groups' prints — or its …@g.us jid.
 
 examples
-  zap send --to +5513988032053 "oi"
+  zap send --to +5511900000000 "oi"
   zap send --myself "lembrete pra mim"
-  cat aviso.txt | zap send --to +5513988032053
+  cat aviso.txt | zap send --to +5511900000000
   zap accounts | jq -r .number
   zap tail | jq -r 'select(.type == "message_received") | "\(.sender_name): \(.text)"'
   zap log  | jq -r '"\(.status) \(.ms)ms \(.method) \(.path)"'
   zap groups | jq -r 'select(.participants | length > 50) | .name'
-  zap sessions --number +5513988032053 --count
+  zap sessions --number +5511900000000 --count
   zap sessions --mine --count
-  zap messages --chat +5513991420971 --limit 40 --plain-text
+  zap messages --chat +5511900000001 --limit 40 --plain-text
   zap sessions --mine --plain -n 20
   zap sessions --gap 4h | jq -r 'select(.inbound == 0) | .number'
 

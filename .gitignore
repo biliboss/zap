@@ -4,3 +4,9 @@ bench/bench
 bench/run.log
 # scratch
 .superpowers/
+# never publish a store: it holds real conversations
+*.db
+*.db-shm
+*.db-wal
+zap.log
+media/
