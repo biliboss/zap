@@ -1,0 +1,426 @@
+{
+  "$defs": {
+    "Account": {
+      "additionalProperties": false,
+      "properties": {
+        "connected": {
+          "type": "boolean"
+        },
+        "jid": {
+          "type": "string"
+        },
+        "number": {
+          "type": "string"
+        },
+        "push_name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "number",
+        "jid",
+        "connected"
+      ],
+      "type": "object"
+    },
+    "Call": {
+      "additionalProperties": false,
+      "properties": {
+        "method": {
+          "type": "string"
+        },
+        "ms": {
+          "type": "integer"
+        },
+        "path": {
+          "type": "string"
+        },
+        "request": {},
+        "status": {
+          "type": "integer"
+        },
+        "time": {
+          "format": "date-time",
+          "type": "string"
+        }
+      },
+      "required": [
+        "time",
+        "method",
+        "path",
+        "status",
+        "ms"
+      ],
+      "type": "object"
+    },
+    "Contact": {
+      "additionalProperties": false,
+      "properties": {
+        "jid": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "number": {
+          "type": "string"
+        },
+        "push_name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "jid"
+      ],
+      "type": "object"
+    },
+    "Event": {
+      "additionalProperties": false,
+      "properties": {
+        "account": {
+          "type": "string"
+        },
+        "chat": {
+          "type": "string"
+        },
+        "chat_name": {
+          "type": "string"
+        },
+        "emoji": {
+          "type": "string"
+        },
+        "from_me": {
+          "type": "boolean"
+        },
+        "id": {
+          "type": "string"
+        },
+        "media": {
+          "type": "string"
+        },
+        "members": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "sender": {
+          "type": "string"
+        },
+        "sender_name": {
+          "type": "string"
+        },
+        "sender_number": {
+          "type": "string"
+        },
+        "target": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "account_connected",
+            "history_synced",
+            "message_received",
+            "message_sent",
+            "message_delivered",
+            "message_read",
+            "message_reacted",
+            "message_edited",
+            "message_revoked",
+            "message_undecryptable",
+            "media_received",
+            "audio_queued",
+            "audio_transcribed",
+            "group_joined",
+            "group_members_added",
+            "group_members_removed",
+            "group_admins_promoted",
+            "group_admins_demoted",
+            "group_renamed",
+            "group_topic_changed",
+            "group_picture_changed",
+            "group_settings_changed",
+            "chat_archived",
+            "chat_pinned",
+            "chat_muted",
+            "chat_marked_read",
+            "chat_deleted",
+            "chat_typing",
+            "contact_name_changed",
+            "contact_picture_changed",
+            "contact_blocked",
+            "contact_unblocked",
+            "call_offered",
+            "call_accepted",
+            "call_rejected",
+            "call_terminated",
+            "account_disconnected",
+            "account_logged_out",
+            "session_opened",
+            "session_closed"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "account",
+        "type",
+        "timestamp"
+      ],
+      "type": "object"
+    },
+    "Group": {
+      "additionalProperties": false,
+      "properties": {
+        "created": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "jid": {
+          "type": "string"
+        },
+        "link": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "owner": {
+          "type": "string"
+        },
+        "owner_name": {
+          "type": "string"
+        },
+        "participants": {
+          "items": {
+            "$ref": "#/$defs/GroupMember"
+          },
+          "type": "array"
+        },
+        "topic": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "jid",
+        "name"
+      ],
+      "type": "object"
+    },
+    "GroupMember": {
+      "additionalProperties": false,
+      "properties": {
+        "admin": {
+          "type": "boolean"
+        },
+        "jid": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "number": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "number",
+        "jid"
+      ],
+      "type": "object"
+    },
+    "GroupRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "from": {
+          "type": "string"
+        },
+        "group": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "reset": {
+          "type": "boolean"
+        },
+        "text": {
+          "type": "string"
+        },
+        "who": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "type": "object"
+    },
+    "PairEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "error": {
+          "type": "string"
+        },
+        "jid": {
+          "type": "string"
+        },
+        "qr": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "SendRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "from": {
+          "type": "string"
+        },
+        "myself": {
+          "type": "boolean"
+        },
+        "text": {
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "type": "object"
+    },
+    "SendResult": {
+      "additionalProperties": false,
+      "properties": {
+        "from": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "from",
+        "timestamp"
+      ],
+      "type": "object"
+    },
+    "Session": {
+      "additionalProperties": false,
+      "properties": {
+        "chat": {
+          "type": "string"
+        },
+        "ended": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "inbound": {
+          "type": "integer"
+        },
+        "last": {
+          "type": "string"
+        },
+        "messages": {
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        },
+        "number": {
+          "type": "string"
+        },
+        "outbound": {
+          "type": "integer"
+        },
+        "started": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "transcript": {
+          "items": {
+            "$ref": "#/$defs/Event"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "chat",
+        "started",
+        "ended",
+        "messages",
+        "inbound",
+        "outbound"
+      ],
+      "type": "object"
+    },
+    "SyncRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "chat": {
+          "type": "string"
+        },
+        "count": {
+          "type": "integer"
+        },
+        "from": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "chat"
+      ],
+      "type": "object"
+    },
+    "SyncResult": {
+      "additionalProperties": false,
+      "properties": {
+        "anchor": {
+          "type": "string"
+        },
+        "anchor_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "chat": {
+          "type": "string"
+        },
+        "requested": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "chat",
+        "requested",
+        "anchor",
+        "anchor_at"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://github.com/biliboss/zap/schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Records zap emits over the unix socket, one per line as ndjson.",
+  "title": "zap"
+}

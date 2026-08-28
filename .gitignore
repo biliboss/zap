@@ -1,0 +1,6 @@
+# built binaries
+zap/zap
+bench/bench
+bench/run.log
+# scratch
+.superpowers/
