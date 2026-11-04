@@ -59,10 +59,81 @@ passa e some. Por isso existe a tabela `messages` no mesmo `store.db`, escrita
 pelo `absorb` (bundle) e pelo handler (mensagem viva) — e também pelo `Send`,
 porque envio próprio NÃO volta como evento no aparelho que enviou.
 
-Quem quer o histórico antigo de um número já pareado tem um caminho só:
-despareá-lo e parear de novo com a janela maior. Não há API de "me manda tudo
-de novo" fora do pedido por chat (`BuildHistorySyncRequest`), que ainda não foi
-construído aqui.
+O passado de UM chat, depois, pede-se ao celular: `BuildHistorySyncRequest` +
+`SendPeerMessage` (`HISTORY_SYNC_ON_DEMAND`, peer data operation), e a resposta
+volta minutos depois como `events.HistorySync` do tipo `ON_DEMAND`. É isso que
+o `follow` usa (veja "Seguir é liberar, buscar o passado e sincronizar"). O
+pedido de histórico da CONTA inteira (`FullHistorySyncOnDemandRequest`) existe
+no protocolo, mas o whatsmeow não o embrulha e o zap não o usa.
+
+## Nada de um chat sem permissão
+
+**Um chat que não está na allowlist não é guardado, não sai no `tail`, não
+chega a um hook e não vai a nenhum backend — e quem decide é uma porta só,
+`Policy.Admit`.** O `store.db`, o barramento do `tail` e o backend ficam atrás
+dela; `remember` ainda confere a lista por conta própria, para que nenhum
+chamador novo consiga esquecer a regra. Sem `allow.toml`, o zap pareia e
+conecta, mas não escuta ninguém. Evento de conta (conectou, desconectou, chegou
+um pacote de histórico) não é de ninguém e passa.
+
+O pacote de histórico do pareamento traz TODOS os chats do celular: o `absorb`
+descarta o que não é de chat liberado, sem ler. A allowlist é relida quando o
+arquivo muda (edição à mão vale com o daemon no ar), e um arquivo quebrado
+mantém a lista que já estava carregada: um erro de digitação nunca abre nem
+fecha a porta. Um mesmo contato chega como JID de telefone ou como `@lid`;
+`follow` grava os dois (`alt`) e `NormJID` tira o sufixo de dispositivo.
+
+Nada de texto de mensagem em log nem em erro: `zap log` troca o `text` do corpo
+pelo tamanho, e o que vai a stderr são contagens e a classe do erro. Não há
+telemetria nem chamada de rede além do WhatsApp e do backend configurado.
+
+## Seguir é liberar, buscar o passado e sincronizar
+
+**`zap follow` libera o chat, pede ao celular o passado dele e, dali em diante,
+sincroniza cada mensagem nova; `unfollow` desfaz os três.** Como o whatsmeow
+deixa pedir o histórico de um chat só, depois do pareamento, o zap não
+guarda nada de chat não liberado — nem cifrado.
+
+O pedido precisa de uma ÂNCORA: uma mensagem real do chat (id, de quem, hora).
+O celular devolve até `count` mensagens imediatamente ANTES dela — a âncora em si
+não vem — e a recomendação do código é 50 por pedido. O zap guarda, só na
+memória e nunca em disco, a mensagem mais nova que viu de cada chat (id, sentido
+e hora; nenhum texto) vinda do pacote do pareamento e do tráfego ao vivo. Sem
+âncora (chat quieto e o zap reiniciou), o `follow` deixa o chat `pending` e a
+primeira mensagem ao vivo vira a âncora. A mensagem-âncora, cujo corpo nunca foi
+guardado, não entra no passado.
+
+Cada resposta `ON_DEMAND` traz, por chat, o `EndOfHistoryTransferType`: é ele que
+diz se o celular ainda tem mensagens mais antigas. O zap pede a próxima página
+(ancorada na mais antiga recebida) até `--max` mensagens, até `--days`, ou até o
+celular dizer que acabou; sem resposta em 3 minutos, o backfill fica `stalled`
+e um novo `follow` o retoma.
+
+Limites, lidos no código e não exercitados contra um celular: o celular
+principal precisa estar ligado e com internet; só vem o que ele ainda guarda
+(o que foi apagado ali ou é anterior a uma restauração não volta); mídia não
+vem, só texto e metadados. O passado vai ao backend com `backfill: true`, e o
+`Nats-Msg-Id` (`conta/chat/id`) faz repetir um backfill ser inofensivo.
+
+`unfollow` apaga as mensagens e os áudios locais do chat. O que já foi
+publicado num backend é do dono do backend: a retenção dele (`max_age`) é a
+defesa.
+
+## Um backend, escolhido num arquivo
+
+**`config.toml` escolhe UM backend (`ndjson` ou `nats`) atrás de uma interface
+de dois métodos, `Sink`; o zap lê esse arquivo e nunca o reescreve.** O que o zap
+reescreve (quem é seguido) mora em outro arquivo, a allowlist, porque um arquivo
+que um programa reescreve perde os comentários de quem o escreveu. Chave
+desconhecida no config é erro: um erro de digitação numa configuração de
+privacidade não pode ser ignorado em silêncio.
+
+O backend publica pelo `Outbox`: uma fila limitada e um worker, porque o handler
+do whatsmeow roda numa goroutine só e um broker lento não pode travá-la. Fila
+cheia espera 2 s e descarta, contando (sem escrever a mensagem). No NATS, o
+stream e os subjects são do dono; o zap confere na partida que o stream captura
+`<prefix>.message.received` e `<prefix>.chat.followed` e recusa subir se não
+captura. O token nunca vai ao arquivo: `token_env` é o NOME da variável.
 
 ## Sessão é view, não tabela
 
@@ -125,6 +196,10 @@ existe arquivo nenhum. `ZAP_HOME` continua obrigatório: sem ele, ou com
 `--socket` ainda no default, `zap serve --fake` recusa a subir, porque o
 socket real (`~/.zap/zap.sock`) nunca pode ser roubado por um processo de
 teste.
+
+O `--fake` nasce atrás da MESMA porta: nada de chat é escutado até um `zap
+follow`, e `zap fake history` dá ao celular de mentira um passado (uma mensagem
+por hora) que só um `follow` consegue pedir, em páginas de 50, como o real.
 
 O que `--fake` deliberadamente NÃO simula: persistência entre reinícios (a
 memória morre com o processo), um bundle de histórico respondendo `SyncChat`

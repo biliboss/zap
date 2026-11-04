@@ -38,6 +38,7 @@ func TestSocketRoundTrip(t *testing.T) {
 
 	t.Run("send", func(t *testing.T) {
 		var res core.SendResult
+		follow(t, ctx, cli, "+55 11 98888-7777")
 		req := core.SendRequest{To: "+55 11 98888-7777", Text: "oi"}
 		if err := cli.JSON(ctx, "POST", "/send", req, &res); err != nil {
 			t.Fatal(err)
@@ -139,6 +140,7 @@ func TestSocketRoundTrip(t *testing.T) {
 	})
 
 	t.Run("tail carries the account", func(t *testing.T) {
+		follow(t, ctx, cli, "+5511988888888")
 		streamCtx, stop := context.WithCancel(ctx)
 		defer stop()
 
@@ -218,6 +220,7 @@ func TestFakeInbound(t *testing.T) {
 	})
 	time.Sleep(200 * time.Millisecond)
 
+	follow(t, ctx, cli, "+5511900000000")
 	inbound := core.FakeRequest{Action: "inbound", From: "+5511999999999", Number: "+5511900000000", Text: "oi"}
 	if err := cli.JSON(ctx, "POST", "/fake", inbound, nil); err != nil {
 		t.Fatal(err)
@@ -259,6 +262,7 @@ func TestFakeSendAndSessions(t *testing.T) {
 	cli := core.NewClient(socket)
 	waitUp(t, ctx, cli)
 
+	follow(t, ctx, cli, "+5511900000000")
 	inbound := core.FakeRequest{Action: "inbound", From: "+5511999999999", Number: "+5511900000000", Text: "oi"}
 	if err := cli.JSON(ctx, "POST", "/fake", inbound, nil); err != nil {
 		t.Fatal(err)
@@ -329,6 +333,7 @@ func TestFakeAudio(t *testing.T) {
 	})
 	time.Sleep(200 * time.Millisecond)
 
+	follow(t, ctx, cli, "+5511900000000")
 	audio := core.FakeRequest{Action: "audio", From: "+5511999999999", Number: "+5511900000000", Path: path, Text: "transcrição"}
 	if err := cli.JSON(ctx, "POST", "/fake", audio, nil); err != nil {
 		t.Fatal(err)
@@ -488,5 +493,21 @@ func TestHookRun(t *testing.T) {
 	}
 	if decoded.Type != ev.Type || decoded.Text != ev.Text {
 		t.Fatalf("event did not round-trip through the command's stdin: got %+v", decoded)
+	}
+}
+
+// follow opens the door for one chat: zap listens to nothing until it is
+// followed, so every test that wants to see a message starts here.
+func follow(t *testing.T, ctx context.Context, cli *core.Client, chat string) {
+	t.Helper()
+	// the first account: a test that paired more numbers must still be unambiguous
+	var accs []core.Account
+	if err := cli.JSON(ctx, "GET", "/accounts", nil, &accs); err != nil || len(accs) == 0 {
+		t.Fatalf("accounts: %v", err)
+	}
+	var res core.FollowResult
+	req := core.FollowRequest{From: accs[0].Number, Chat: chat, NoBackfill: true}
+	if err := cli.JSON(ctx, "POST", "/follow", req, &res); err != nil {
+		t.Fatalf("follow %s: %v", chat, err)
 	}
 }

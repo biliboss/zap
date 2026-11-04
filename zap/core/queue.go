@@ -115,7 +115,7 @@ func (t *Transcriber) enqueue(ctx context.Context, acc *WhatsApp_Account, evt *e
 		fmt.Fprintf(os.Stderr, "zap: queue audio: %v\n", err)
 		return
 	}
-	t.wa.bus.Publish(Event{
+	t.wa.publish(Event{
 		Account: accountKey(acc.cli), Type: Events.Audio.Queued,
 		Chat: evt.Info.Chat.String(), ID: evt.Info.ID, Timestamp: time.Now(),
 	})
@@ -155,7 +155,7 @@ func (t *Transcriber) next(ctx context.Context) bool {
 	}
 	t.wa.db.Exec(`UPDATE audio_queue SET state = 'done', error = NULL WHERE account = ? AND chat = ? AND id = ?`, account, chat, id)
 	t.wa.db.Exec(`UPDATE messages SET text = ? WHERE account = ? AND chat = ? AND id = ?`, text, account, chat, id)
-	t.wa.bus.Publish(Event{
+	t.wa.publish(Event{
 		Account: account, Type: Events.Audio.Transcribed, Chat: chat, ID: id,
 		Text: text, Timestamp: time.Now(),
 	})

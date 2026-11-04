@@ -35,6 +35,13 @@ type Backend interface {
 	Retry(ctx context.Context) (int, error)
 	Groups(ctx context.Context, from string) ([]Group, error)
 	GroupAct(ctx context.Context, req GroupRequest) (Group, error)
+
+	// Following: the allowlist and what hangs off it.
+	Follow(ctx context.Context, req FollowRequest) (FollowResult, error)
+	Unfollow(ctx context.Context, req UnfollowRequest) (UnfollowResult, error)
+	Follows(ctx context.Context) ([]Follow, error)
+	Chats(ctx context.Context, from string) ([]ChatInfo, error)
+	Purge(ctx context.Context) (PurgeResult, error)
 }
 
 // Account is one linked WhatsApp number held by the daemon.
@@ -245,6 +252,11 @@ func (d *Daemon) routes() http.Handler {
 	mux.HandleFunc("GET /contacts", d.handleContacts)
 	mux.HandleFunc("GET /groups", d.handleGroups)
 	mux.HandleFunc("POST /groups", d.handleGroupAct)
+	mux.HandleFunc("POST /follow", d.handleFollow)
+	mux.HandleFunc("POST /unfollow", d.handleUnfollow)
+	mux.HandleFunc("GET /follows", d.handleFollows)
+	mux.HandleFunc("GET /chats", d.handleChats)
+	mux.HandleFunc("POST /purge", d.handlePurge)
 	mux.HandleFunc("GET /log", d.handleLog)
 	mux.HandleFunc("POST /fake", d.handleFake)
 	return d.logging(mux)
@@ -263,6 +275,7 @@ func (d *Daemon) logging(next http.Handler) http.Handler {
 			raw, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 			r.Body = io.NopCloser(bytes.NewReader(raw))
 			json.Unmarshal(raw, &body)
+			body = redactBody(body)
 		}
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		start := time.Now()
@@ -276,6 +289,22 @@ func (d *Daemon) logging(next http.Handler) http.Handler {
 			Request: body,
 		})
 	})
+}
+
+// redactBody keeps the request log about requests, not about what people said:
+// the text of a message is replaced by its length. What is left (who, which
+// route, how long) is enough to see the system work.
+func redactBody(body any) any {
+	m, ok := body.(map[string]any)
+	if !ok {
+		return body
+	}
+	for _, k := range []string{"text"} {
+		if s, ok := m[k].(string); ok && s != "" {
+			m[k] = fmt.Sprintf("[%d chars]", len([]rune(s)))
+		}
+	}
+	return m
 }
 
 type statusRecorder struct {
@@ -445,6 +474,61 @@ func (d *Daemon) handleSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	res, err := d.Backend.SyncChat(r.Context(), req)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (d *Daemon) handleFollow(w http.ResponseWriter, r *http.Request) {
+	var req FollowRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	res, err := d.Backend.Follow(r.Context(), req)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (d *Daemon) handleUnfollow(w http.ResponseWriter, r *http.Request) {
+	var req UnfollowRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	res, err := d.Backend.Unfollow(r.Context(), req)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (d *Daemon) handleFollows(w http.ResponseWriter, r *http.Request) {
+	list, err := d.Backend.Follows(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (d *Daemon) handleChats(w http.ResponseWriter, r *http.Request) {
+	list, err := d.Backend.Chats(r.Context(), r.URL.Query().Get("from"))
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (d *Daemon) handlePurge(w http.ResponseWriter, r *http.Request) {
+	res, err := d.Backend.Purge(r.Context())
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return

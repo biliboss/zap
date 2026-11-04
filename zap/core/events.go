@@ -70,6 +70,11 @@ type ChatEvents struct {
 	MarkedRead EventType
 	Deleted    EventType
 	Typing     EventType // the other side is composing
+
+	// ours: the owner's decision about a chat, not something the phone said
+	Followed   EventType // the chat was allowed; zap listens to it from now on
+	Unfollowed EventType // the chat was taken off the list
+	Backfilled EventType // the past of a followed chat finished arriving
 }
 
 // ContactEvents is the address book moving under us.
@@ -145,6 +150,7 @@ func (c Catalogue) All() []EventType {
 		c.Group.AdminsPromoted, c.Group.AdminsDemoted,
 		c.Group.Renamed, c.Group.TopicChanged, c.Group.PictureChanged, c.Group.SettingsChanged,
 		c.Chat.Archived, c.Chat.Pinned, c.Chat.Muted, c.Chat.MarkedRead, c.Chat.Deleted, c.Chat.Typing,
+		c.Chat.Followed, c.Chat.Unfollowed, c.Chat.Backfilled,
 		c.Contact.NameChanged, c.Contact.PictureChanged, c.Contact.Blocked, c.Contact.Unblocked,
 		c.Call.Offered, c.Call.Accepted, c.Call.Rejected, c.Call.Terminated,
 		c.Account.Disconnected, c.Account.LoggedOut,
@@ -194,6 +200,9 @@ var Events = Catalogue{
 		MarkedRead: "chat_marked_read",
 		Deleted:    "chat_deleted",
 		Typing:     "chat_typing",
+		Followed:   "chat_followed",
+		Unfollowed: "chat_unfollowed",
+		Backfilled: "chat_backfilled",
 	},
 	Contact: ContactEvents{
 		NameChanged:    "contact_name_changed",
@@ -260,6 +269,12 @@ func (c Catalogue) Emits(t EventType) (source, meaning string) {
 		return "phone", "you changed the state of a chat somewhere else"
 	case c.Chat.Typing:
 		return "phone", "the other side is composing"
+	case c.Chat.Followed:
+		return "zap", "a chat was allowed: zap listens to it from now on"
+	case c.Chat.Unfollowed:
+		return "zap", "a chat was taken off the allowlist"
+	case c.Chat.Backfilled:
+		return "zap", "the past of a followed chat finished arriving"
 	case c.Contact.NameChanged, c.Contact.PictureChanged:
 		return "phone", "the address book moved"
 	case c.Contact.Blocked, c.Contact.Unblocked:
@@ -293,6 +308,10 @@ type Event struct {
 	Emoji   string   `json:"emoji,omitempty"`   // the reaction itself
 	Media   string   `json:"media,omitempty"`   // image, video, audio, document, sticker
 	Target  string   `json:"target,omitempty"`  // the message a reaction or edit refers to
+
+	Backfill bool `json:"backfill,omitempty"` // the message comes from the past, not from now
+	Count    int  `json:"count,omitempty"`    // chat_backfilled: messages brought in
+	More     bool `json:"more,omitempty"`     // chat_backfilled: the phone has older ones it did not send
 
 	ChatName     string `json:"chat_name,omitempty"`
 	SenderNumber string `json:"sender_number,omitempty"`

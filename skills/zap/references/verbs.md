@@ -5,6 +5,10 @@ binary, the binary is right.
 
 ## zap serve
 ```
+  -allow string
+    	allowlist file: the chats zap may listen to (default "~/.zap/allow.toml")
+  -config string
+    	config file: which backend allowed messages go to (default "~/.zap/config.toml")
   -db string
     	sqlite store path (default "~/.zap/store.db")
   -history-days int
@@ -229,6 +233,52 @@ binary, the binary is right.
 ```
   -retry
     	put failed and stuck transcriptions back in line
+  -socket string
+    	unix socket path (default "~/.zap/zap.sock")
+```
+
+## zap chats
+```
+  -from string
+    	account to read
+  -socket string
+    	unix socket path (default "~/.zap/zap.sock")
+```
+
+## zap follow
+```
+  -again
+    	ask for the past again on a chat that already has it
+  -days int
+    	how far back to ask the phone for the past (default 30)
+  -from string
+    	account that follows
+  -label string
+    	a name for the chat, to find it again
+  -max int
+    	at most this many past messages (default 500)
+  -no-backfill
+    	follow from now on, without the past
+  -socket string
+    	unix socket path (default "~/.zap/zap.sock")
+```
+
+## zap unfollow
+```
+  -from string
+    	account that follows
+  -socket string
+    	unix socket path (default "~/.zap/zap.sock")
+```
+
+## zap follows
+```
+  -socket string
+    	unix socket path (default "~/.zap/zap.sock")
+```
+
+## zap purge
+```
   -socket string
     	unix socket path (default "~/.zap/zap.sock")
 ```

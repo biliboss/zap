@@ -40,6 +40,9 @@ type WhatsApp struct {
 	audio      *Transcriber
 	SessionGap time.Duration
 	closed     map[string]int64 // chat -> the last ts we already closed on
+
+	policy *Policy   // the door: nothing of a chat off the allowlist passes
+	fol    *Follower // follow, backfill, anchors
 }
 
 // Account pairs a client with the connection state we track ourselves. Asking
@@ -50,7 +53,13 @@ type WhatsApp_Account struct {
 	connected atomic.Bool
 }
 
-func OpenWhatsApp(ctx context.Context, dbPath string) (*WhatsApp, error) {
+// OpenWhatsApp opens the session store and connects every paired number. The
+// policy is required: a daemon without an allowlist listens to nothing, and a
+// nil one is a bug, not a default.
+func OpenWhatsApp(ctx context.Context, dbPath string, policy *Policy) (*WhatsApp, error) {
+	if policy == nil || policy.Allow == nil {
+		return nil, fmt.Errorf("open whatsapp: a policy with an allowlist is required")
+	}
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
 		return nil, fmt.Errorf("create %s: %w", filepath.Dir(dbPath), err)
 	}
@@ -70,7 +79,9 @@ func OpenWhatsApp(ctx context.Context, dbPath string) (*WhatsApp, error) {
 		container: container,
 		db:        db,
 		accounts:  map[string]*WhatsApp_Account{},
+		policy:    policy,
 	}
+	w.fol = &Follower{Policy: policy, Phone: w, Archive: w, Bus: w.bus.Publish}
 	devices, err := container.GetAllDevices(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("read devices: %w", err)
@@ -145,8 +156,14 @@ func (w *WhatsApp) Send(ctx context.Context, req SendRequest) (SendResult, error
 		Timestamp: resp.Timestamp,
 		Text:      req.Text,
 	}
-	w.remember(sent)
-	w.bus.Publish(sent)
+	// Sending is the owner's act and works for any chat; keeping it is a
+	// different matter: a chat that is not followed is not written down.
+	w.fol.Observe(sent.Chat, Anchor{ID: sent.ID, FromMe: true, At: sent.Timestamp})
+	if w.policy.Admit(sent) {
+		w.remember(sent)
+		w.bus.Publish(sent)
+		w.policy.Emit(sent)
+	}
 	return SendResult{ID: resp.ID, From: from, Timestamp: resp.Timestamp}, nil
 }
 
@@ -307,16 +324,90 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 CREATE INDEX IF NOT EXISTS messages_recent ON messages (account, chat, ts DESC);`
 
-func (w *WhatsApp) remember(ev Event) {
-	if ev.ID == "" || ev.Chat == "" {
-		return
+// remember writes one message down, but only if its chat is on the allowlist:
+// this is the last line of the rule, so no caller can forget it.
+func (w *WhatsApp) remember(ev Event) bool {
+	if ev.ID == "" || ev.Chat == "" || !w.policy.Allow.Allowed(ev.Chat) {
+		return false
 	}
-	_, err := w.db.Exec(
+	res, err := w.db.Exec(
 		`INSERT OR IGNORE INTO messages (account, chat, id, sender, from_me, ts, text) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		ev.Account, ev.Chat, ev.ID, ev.Sender, ev.FromMe, ev.Timestamp.Unix(), ev.Text)
 	if err != nil {
+		// the error, never the row: the text is somebody else's
 		fmt.Fprintf(os.Stderr, "zap: store message: %v\n", err)
+		return false
 	}
+	n, _ := res.RowsAffected()
+	return n > 0
+}
+
+// Keep, Oldest, Drop and Stored make the message table an Archive for the
+// follower.
+func (w *WhatsApp) Keep(ev Event) bool { return w.remember(ev) }
+
+func (w *WhatsApp) Oldest(account, chat string) (Anchor, bool) {
+	var a Anchor
+	var ts int64
+	var from int
+	err := w.db.QueryRow(
+		`SELECT id, from_me, ts FROM messages WHERE account = ? AND chat = ? ORDER BY ts ASC LIMIT 1`,
+		account, chat).Scan(&a.ID, &from, &ts)
+	if err != nil {
+		return Anchor{}, false
+	}
+	a.FromMe, a.At = from != 0, time.Unix(ts, 0)
+	return a, true
+}
+
+func (w *WhatsApp) Drop(chats []string) (int, error) {
+	total := 0
+	// match by the normalised id: the store may hold the same chat under a
+	// spelling that is not the one on the allowlist
+	want := map[string]bool{}
+	for _, chat := range chats {
+		want[NormJID(chat)] = true
+	}
+	for _, chat := range w.Stored() {
+		if !want[NormJID(chat)] {
+			continue
+		}
+		// the voice notes of the chat go with it: the files are somebody
+		// else's words too
+		if rows, err := w.db.Query(`SELECT path FROM audio_queue WHERE chat = ?`, chat); err == nil {
+			for rows.Next() {
+				var p string
+				if rows.Scan(&p) == nil && p != "" {
+					os.Remove(p)
+				}
+			}
+			rows.Close()
+			w.db.Exec(`DELETE FROM audio_queue WHERE chat = ?`, chat)
+		}
+		res, err := w.db.Exec(`DELETE FROM messages WHERE chat = ?`, chat)
+		if err != nil {
+			return total, err
+		}
+		n, _ := res.RowsAffected()
+		total += int(n)
+	}
+	return total, nil
+}
+
+func (w *WhatsApp) Stored() []string {
+	rows, err := w.db.Query(`SELECT DISTINCT chat FROM messages`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var chat string
+		if rows.Scan(&chat) == nil {
+			out = append(out, chat)
+		}
+	}
+	return out
 }
 
 func (w *WhatsApp) Messages(ctx context.Context, q MessagesQuery) ([]Event, error) {
@@ -379,21 +470,61 @@ func (w *WhatsApp) Messages(ctx context.Context, q MessagesQuery) ([]Event, erro
 
 // absorb writes a history sync bundle into the message store. It runs off the
 // event handler because a full sync carries tens of thousands of messages.
+//
+// Only conversations on the allowlist are kept: the bundle the phone sends at
+// pairing carries every chat it has, and all but the allowed ones are dropped
+// here, unread. For the rest only an anchor (an id and a time, in memory) is
+// noted, so a later follow knows where to ask the phone from.
 func (w *WhatsApp) absorb(account string, data *waHistorySync.HistorySync) {
+	onDemand := data.GetSyncType() == waHistorySync.HistorySync_ON_DEMAND
 	for _, conv := range data.GetConversations() {
 		chat := conv.GetID()
-		for _, hsm := range conv.GetMessages() {
+		msgs := conv.GetMessages()
+		if len(msgs) > 0 {
+			// the newest message is the last one the bundle lists, or the one
+			// with the largest timestamp; ids and times only
+			var newest *waHistorySync.HistorySyncMsg
+			for _, hsm := range msgs {
+				if newest == nil || hsm.GetMessage().GetMessageTimestamp() > newest.GetMessage().GetMessageTimestamp() {
+					newest = hsm
+				}
+			}
+			info := newest.GetMessage()
+			w.fol.Observe(chat, Anchor{
+				ID: info.GetKey().GetID(), FromMe: info.GetKey().GetFromMe(),
+				At: time.Unix(int64(info.GetMessageTimestamp()), 0),
+			})
+		}
+		// the phone names a person by phone jid or by lid; any spelling on the
+		// list lets the conversation in, and it is kept under that spelling
+		allowedAs := ""
+		for _, id := range []string{chat, conv.GetPnJID(), conv.GetLidJID()} {
+			if id != "" && w.policy.Allow.Allowed(id) {
+				allowedAs = id
+				break
+			}
+		}
+		if allowedAs == "" {
+			continue
+		}
+		chat = allowedAs
+		page := make([]Event, 0, len(msgs))
+		for _, hsm := range msgs {
 			info := hsm.GetMessage()
 			key := info.GetKey()
 			ev := Event{
 				Account:   account,
-				Type:      "message",
+				Type:      Events.Message.Received,
 				Chat:      chat,
 				ID:        key.GetID(),
 				Sender:    key.GetParticipant(),
 				FromMe:    key.GetFromMe(),
 				Timestamp: time.Unix(int64(info.GetMessageTimestamp()), 0),
 				Text:      messageText(info.GetMessage()),
+				Media:     mediaKind(info.GetMessage()),
+			}
+			if ev.FromMe {
+				ev.Type = Events.Message.Sent
 			}
 			if ev.Sender == "" {
 				ev.Sender = account
@@ -401,7 +532,13 @@ func (w *WhatsApp) absorb(account string, data *waHistorySync.HistorySync) {
 					ev.Sender = chat
 				}
 			}
-			w.remember(ev)
+			page = append(page, ev)
+		}
+		if onDemand {
+			more := conv.GetEndOfHistoryTransferType() == waHistorySync.Conversation_COMPLETE_ON_DEMAND_SYNC_BUT_MORE_MSG_REMAIN_ON_PRIMARY
+			w.fol.OnDemand(account, chat, page, more)
+		} else {
+			w.fol.Ingest(page)
 		}
 	}
 }
@@ -639,6 +776,9 @@ func (w *WhatsApp) SyncChat(ctx context.Context, req SyncRequest) (SyncResult, e
 	chat, err := w.resolveChat(ctx, acc, req.Chat)
 	if err != nil {
 		return SyncResult{}, err
+	}
+	if !w.policy.Allow.Allowed(chat.String()) {
+		return SyncResult{}, fmt.Errorf("%s is not followed: run `zap follow` first, zap asks the phone for no chat it may not listen to", chat.User)
 	}
 	anchor, err := w.oldestMessage(ctx, account, chat.String())
 	if err != nil {
@@ -981,7 +1121,17 @@ func (w *WhatsApp) onEvent(acc *WhatsApp_Account, raw any) {
 		// nothing is invisible: what zap has not curated still reaches tail
 		ev.Type = Raw(strings.TrimPrefix(fmt.Sprintf("%T", raw), "*events."))
 	}
+	w.publish(ev)
+}
+
+// publish is the only way an event leaves the process: through the policy, to
+// the tail and to the backend. A chat that is not on the allowlist stops here.
+func (w *WhatsApp) publish(ev Event) {
+	if !w.policy.Admit(ev) {
+		return
+	}
 	w.bus.Publish(ev)
+	w.policy.Emit(ev)
 }
 
 // onMessage splits the one whatsmeow message event into the facts a consumer
@@ -993,6 +1143,13 @@ func (w *WhatsApp) onMessage(acc *WhatsApp_Account, e *events.Message, ev Event)
 	ev.FromMe = e.Info.IsFromMe
 	ev.ID = e.Info.ID
 	ev.Timestamp = e.Info.Timestamp
+
+	// Before the door: a chat nobody allowed still leaves one trace, in memory
+	// only, so a later follow can ask the phone for its past from here.
+	w.fol.Observe(ev.Chat, Anchor{ID: ev.ID, FromMe: ev.FromMe, At: ev.Timestamp})
+	if !w.policy.Admit(ev) {
+		return Event{}
+	}
 
 	if r := e.Message.GetReactionMessage(); r != nil {
 		ev.Type, ev.Emoji, ev.Target = Events.Message.Reacted, r.GetText(), r.GetKey().GetID()
@@ -1020,6 +1177,7 @@ func (w *WhatsApp) onMessage(acc *WhatsApp_Account, e *events.Message, ev Event)
 	}
 	w.remember(ev)
 	w.noteSession(ev)
+	w.fol.Resume(ev)
 	return ev
 }
 

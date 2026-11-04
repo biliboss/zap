@@ -1,0 +1,36 @@
+# zap's config: where the messages of the chats you follow go.
+# Copy to $ZAP_HOME/config.toml (default ~/.zap/config.toml), or pass --config.
+# zap reads this file and never rewrites it. Without it, zap runs as "ndjson".
+#
+# Who may be listened to is NOT here: that is allow.toml, which `zap follow`
+# and `zap unfollow` edit. A chat that is not in allow.toml reaches no backend.
+
+[backend]
+type = "ndjson"            # ndjson | nats
+
+# ndjson: what zap always had. The allowed events are on `zap tail` (the unix
+# socket). With stdout = true they are also written, one JSON line each, to the
+# stdout of `zap serve`.
+[backend.ndjson]
+stdout = false
+
+# nats: publish every allowed event to a JetStream stream, one subject per kind
+# of event, and wait for the stream's ack.
+#
+#   <prefix>.message.received   <prefix>.message.sent      <prefix>.message.edited
+#   <prefix>.message.revoked    <prefix>.message.reacted   <prefix>.message.transcribed
+#   <prefix>.chat.followed      <prefix>.chat.unfollowed   <prefix>.chat.backfilled
+#
+# The Nats-Msg-Id header is <account>/<chat>/<message id>, so JetStream drops a
+# message that is published twice (a backfill replayed, for instance).
+[backend.nats]
+url = "nats://127.0.0.1:4222"
+stream = "ZAP"             # the JetStream stream
+subjects = ["zap.>"]       # what the stream captures; default <prefix>.>
+prefix = "zap"             # the subject is <prefix>.<entity>.<event>
+create_stream = true       # create the stream when it does not exist
+storage = "file"           # file | memory
+max_age = "720h"           # how long the stream keeps messages; "0" forever
+creds_file = ""            # path to a .creds file, when the server asks for one
+token_env = ""             # the NAME of an environment variable holding a token;
+                           # never put the token itself in this file

@@ -24,6 +24,12 @@ type Fake struct {
 	bus      Bus[Event]
 	whisper  *Transcriber // nil unless --transcribe; only run() is used
 
+	// the same door the real daemon has: deny by default, so a fake daemon
+	// teaches the same lesson the real one enforces
+	policy *Policy
+	fol    *Follower
+	phone  map[string][]Event // chat -> the past the fake "phone" still holds, oldest first
+
 	SessionGap time.Duration
 }
 
@@ -34,7 +40,8 @@ func NewFake(numbers ...string) *Fake {
 	if len(numbers) == 0 {
 		numbers = []string{"+5511999999999"}
 	}
-	f := &Fake{contacts: map[string]Contact{}, groups: map[string]*Group{}}
+	f := &Fake{contacts: map[string]Contact{}, groups: map[string]*Group{}, phone: map[string][]Event{}}
+	f.SetPolicy(&Policy{Allow: NewMemoryAllowlist()})
 	for _, n := range numbers {
 		f.addAccount(n)
 	}
@@ -115,7 +122,7 @@ func (f *Fake) transcribeNext(ctx context.Context, t *Transcriber) bool {
 		return true
 	}
 	f.setText(job.account, job.chat, job.id, text)
-	f.bus.Publish(Event{
+	f.publish(Event{
 		Account: job.account, Type: Events.Audio.Transcribed,
 		Chat: job.chat, ID: job.id, Text: text, Timestamp: time.Now(),
 	})
@@ -158,7 +165,12 @@ func (f *Fake) nextID() string {
 
 // record stores and publishes ev, and opens a session when this chat was
 // quiet longer than SessionGap. Callers hold f.mu (write).
-func (f *Fake) record(ev Event) {
+func (f *Fake) record(ev Event) bool {
+	// same door as the real daemon: a trace for a later follow, then the gate
+	f.fol.Observe(ev.Chat, Anchor{ID: ev.ID, FromMe: ev.FromMe, At: ev.Timestamp})
+	if !f.policy.Admit(ev) {
+		return false
+	}
 	gap := f.SessionGap
 	if gap <= 0 {
 		gap = DefaultSessionGap
@@ -178,6 +190,18 @@ func (f *Fake) record(ev Event) {
 			Chat: ev.Chat, ChatName: ev.ChatName, Timestamp: ev.Timestamp,
 		})
 	}
+	f.policy.Emit(ev)
+	f.fol.Resume(ev)
+	return true
+}
+
+// publish is the fake's only way out for events that do not go through record.
+func (f *Fake) publish(ev Event) {
+	if !f.policy.Admit(ev) {
+		return
+	}
+	f.bus.Publish(ev)
+	f.policy.Emit(ev)
 }
 
 // decorate fills ChatName/SenderName/SenderNumber from the contact and group
@@ -388,6 +412,9 @@ func (f *Fake) SyncChat(ctx context.Context, req SyncRequest) (SyncResult, error
 	account, err := f.account(req.From)
 	if err != nil {
 		return SyncResult{}, err
+	}
+	if !f.policy.Allow.Allowed(req.Chat) {
+		return SyncResult{}, fmt.Errorf("%s is not followed: run `zap follow` first, zap asks the phone for no chat it may not listen to", digits(req.Chat))
 	}
 	var oldest *Event
 	for i := range f.msgs {
@@ -603,7 +630,7 @@ func digitsSet(values []string) map[string]bool {
 // FakeRequest is every fake mutation in one shape, for the same reason
 // GroupRequest is: the CLI is a passthrough.
 type FakeRequest struct {
-	Action  string   `json:"action"`           // contact group inbound audio
+	Action  string   `json:"action"`           // contact group inbound audio history
 	From    string   `json:"from,omitempty"`   // the fake ACCOUNT that receives
 	Number  string   `json:"number,omitempty"` // contact number, or inbound sender
 	Name    string   `json:"name,omitempty"`
@@ -612,6 +639,7 @@ type FakeRequest struct {
 	Who     []string `json:"who,omitempty"`
 	Path    string   `json:"path,omitempty"` // audio file on disk
 	Seconds int      `json:"seconds,omitempty"`
+	Count   int      `json:"count,omitempty"` // history: how many past messages
 }
 
 // Act returns the record the action produced — Contact, Group, Event, Event —
@@ -626,6 +654,8 @@ func (f *Fake) Act(ctx context.Context, req FakeRequest) (any, error) {
 		return f.actInbound(req)
 	case "audio":
 		return f.actAudio(req)
+	case "history":
+		return f.actHistory(req)
 	default:
 		return nil, fmt.Errorf("unknown fake action %q", req.Action)
 	}
@@ -686,15 +716,17 @@ func (f *Fake) actAudio(req FakeRequest) (Event, error) {
 		Sender: sender, ID: id, Timestamp: time.Now(), Media: "audio",
 	}
 	f.decorate(&ev)
-	f.record(ev)
+	if !f.record(ev) {
+		return ev, nil // a chat nobody allowed: no queue, no file kept
+	}
 
 	f.audio = append(f.audio, fakeAudio{account: account, chat: chat, id: id, path: req.Path, state: "pending"})
-	f.bus.Publish(Event{Account: account, Type: Events.Audio.Queued, Chat: chat, ID: id, Timestamp: time.Now()})
+	f.publish(Event{Account: account, Type: Events.Audio.Queued, Chat: chat, ID: id, Timestamp: time.Now()})
 
 	if req.Text != "" {
 		f.audio[len(f.audio)-1].state = "done"
 		f.setText(account, chat, id, req.Text)
-		f.bus.Publish(Event{Account: account, Type: Events.Audio.Transcribed, Chat: chat, ID: id, Text: req.Text, Timestamp: time.Now()})
+		f.publish(Event{Account: account, Type: Events.Audio.Transcribed, Chat: chat, ID: id, Text: req.Text, Timestamp: time.Now()})
 	}
 	return ev, nil
 }
