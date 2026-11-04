@@ -16,3 +16,7 @@ docs/superpowers/
 
 # the knowledge graph is derived, not authored
 graphify-out/
+
+# the owner's own config and allowlist live in ~/.zap, but never commit one
+allow.toml
+config.toml

@@ -53,6 +53,36 @@
       ],
       "type": "object"
     },
+    "ChatInfo": {
+      "additionalProperties": false,
+      "properties": {
+        "followed": {
+          "type": "boolean"
+        },
+        "jid": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "last": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "number": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "jid",
+        "kind",
+        "followed"
+      ],
+      "type": "object"
+    },
     "Contact": {
       "additionalProperties": false,
       "properties": {
@@ -80,11 +110,17 @@
         "account": {
           "type": "string"
         },
+        "backfill": {
+          "type": "boolean"
+        },
         "chat": {
           "type": "string"
         },
         "chat_name": {
           "type": "string"
+        },
+        "count": {
+          "type": "integer"
         },
         "emoji": {
           "type": "string"
@@ -103,6 +139,9 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "more": {
+          "type": "boolean"
         },
         "sender": {
           "type": "string"
@@ -153,6 +192,9 @@
             "chat_marked_read",
             "chat_deleted",
             "chat_typing",
+            "chat_followed",
+            "chat_unfollowed",
+            "chat_backfilled",
             "contact_name_changed",
             "contact_picture_changed",
             "contact_blocked",
@@ -185,6 +227,9 @@
         "chat": {
           "type": "string"
         },
+        "count": {
+          "type": "integer"
+        },
         "from": {
           "type": "string"
         },
@@ -212,6 +257,90 @@
       },
       "required": [
         "action"
+      ],
+      "type": "object"
+    },
+    "Follow": {
+      "additionalProperties": false,
+      "properties": {
+        "backfill": {
+          "type": "string"
+        },
+        "backfilled": {
+          "type": "integer"
+        },
+        "chat": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "since": {
+          "format": "date-time",
+          "type": "string"
+        }
+      },
+      "required": [
+        "chat",
+        "since",
+        "backfill",
+        "backfilled"
+      ],
+      "type": "object"
+    },
+    "FollowRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "again": {
+          "type": "boolean"
+        },
+        "chat": {
+          "type": "string"
+        },
+        "days": {
+          "type": "integer"
+        },
+        "from": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "max": {
+          "type": "integer"
+        },
+        "no_backfill": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "chat"
+      ],
+      "type": "object"
+    },
+    "FollowResult": {
+      "additionalProperties": false,
+      "properties": {
+        "backfill": {
+          "type": "string"
+        },
+        "chat": {
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "new": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "chat",
+        "new",
+        "backfill"
       ],
       "type": "object"
     },
@@ -321,6 +450,22 @@
           "type": "string"
         }
       },
+      "type": "object"
+    },
+    "PurgeResult": {
+      "additionalProperties": false,
+      "properties": {
+        "chats": {
+          "type": "integer"
+        },
+        "messages": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "chats",
+        "messages"
+      ],
       "type": "object"
     },
     "SendRequest": {
@@ -457,6 +602,41 @@
         "requested",
         "anchor",
         "anchor_at"
+      ],
+      "type": "object"
+    },
+    "UnfollowRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "chat": {
+          "type": "string"
+        },
+        "from": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "chat"
+      ],
+      "type": "object"
+    },
+    "UnfollowResult": {
+      "additionalProperties": false,
+      "properties": {
+        "chat": {
+          "type": "string"
+        },
+        "dropped": {
+          "type": "integer"
+        },
+        "removed": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "chat",
+        "removed",
+        "dropped"
       ],
       "type": "object"
     }

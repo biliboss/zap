@@ -81,6 +81,16 @@ func main() {
 		err = cmdSessions(ctx, os.Args[2:])
 	case "sync":
 		err = cmdSync(ctx, os.Args[2:])
+	case "follow":
+		err = cmdFollow(ctx, os.Args[2:])
+	case "unfollow":
+		err = cmdUnfollow(ctx, os.Args[2:])
+	case "follows":
+		err = cmdFollows(ctx, os.Args[2:])
+	case "chats":
+		err = cmdChats(ctx, os.Args[2:])
+	case "purge":
+		err = cmdPurge(ctx, os.Args[2:])
 	case "fake":
 		err = cmdFake(ctx, os.Args[2:])
 	case "-h", "--help", "help":
@@ -127,6 +137,17 @@ func usage() {
   zap sync --chat <num> [--count N]
                                   ask the phone for messages older than the oldest stored
   zap log                         stream every request the daemon handles, ndjson
+
+  zap chats [search]              the chats the phone knows; * marks the followed ones
+  zap follow <num|group> [--label X] [--days 30] [--max 500] [--no-backfill]
+                                  allow the chat, fetch its past, sync it from now on
+  zap unfollow <num|label>        undo it: off the list, stored messages deleted
+  zap follows                     who is followed, and how each backfill stands
+  zap purge                       delete stored messages of chats that are not followed
+
+Nothing is listened to until zap follow: a chat that is not on the allowlist
+($ZAP_HOME/allow.toml) is not stored, not tailed and not sent to the backend.
+The backend ($ZAP_HOME/config.toml: ndjson or nats) only receives followed chats.
 
   zap groups                      list the groups you are in
   zap group info   <group>        who is in it, who is admin
@@ -222,13 +243,39 @@ func cmdServe(ctx context.Context, args []string) error {
 	mediaDir := fs.String("media", filepath.Join(zapHome(), "media"), "where voice notes are kept")
 	fake := fs.Bool("fake", false, "serve a fake daemon — no phone, no whatsmeow — for integration tests")
 	fakeNumbers := fs.String("fake-numbers", "+5511999999999", "comma separated fake numbers to seed --fake with")
+	cfgPath := fs.String("config", defaultConfig(), "config file: which backend allowed messages go to")
+	allowPath := fs.String("allow", defaultAllow(), "allowlist file: the chats zap may listen to")
 	fs.Parse(args)
+
+	// The door comes first: without an allowlist zap pairs and connects but
+	// listens to no chat, and nothing reaches the store or the backend.
+	cfg, err := core.LoadConfig(*cfgPath)
+	if err != nil {
+		return err
+	}
+	allow, err := core.OpenAllowlist(*allowPath)
+	if err != nil {
+		return err
+	}
+	sink, err := core.NewSink(ctx, cfg, os.Stdout)
+	if err != nil {
+		return err
+	}
+	out := core.NewOutbox(sink, 1024)
+	defer out.Close()
+	policy := &core.Policy{Allow: allow, Out: out}
+	if n := len(allow.List()); n == 0 {
+		fmt.Fprintf(os.Stderr, "zap: no chat is followed: zap listens to nothing until `zap follow`\n")
+	} else {
+		fmt.Fprintf(os.Stderr, "zap: backend %s, %d chat(s) followed\n", cfg.Backend.Type, n)
+	}
 
 	if *fake {
 		if os.Getenv("ZAP_HOME") == "" && *sock == defaultSocket() {
 			return fmt.Errorf("refusing to run fake on the real socket — set ZAP_HOME=$(mktemp -d) or pass --socket")
 		}
 		f := core.NewFake(strings.Split(*fakeNumbers, ",")...)
+		f.SetPolicy(policy)
 		f.SessionGap = *sessionGap
 		if err := f.StartTranscriber(ctx, &core.Transcriber{Enabled: *transcribe, Model: *model, Dir: *mediaDir}); err != nil {
 			return err
@@ -240,12 +287,15 @@ func cmdServe(ctx context.Context, args []string) error {
 
 	core.SetHistoryWindow(*histDays, *histPerChat)
 
-	wa, err := core.OpenWhatsApp(ctx, *db)
+	wa, err := core.OpenWhatsApp(ctx, *db, policy)
 	if err != nil {
 		return err
 	}
 	defer wa.Close()
 
+	if n := wa.Stray(); n > 0 {
+		fmt.Fprintf(os.Stderr, "zap: %d stored chat(s) are not followed (kept by an older zap): `zap purge` deletes them\n", n)
+	}
 	wa.SessionGap = *sessionGap
 	go wa.WatchSessions(ctx)
 
@@ -1003,7 +1053,7 @@ func cmdLog(ctx context.Context, args []string) error {
 // and it is a thin passthrough exactly like cmdGroup.
 func cmdFake(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: zap fake <contact|group|inbound|audio> …")
+		return fmt.Errorf("usage: zap fake <contact|group|inbound|audio|history> …")
 	}
 	// The action verb comes first; parseFlags then reads flags wherever they
 	// land, so `zap fake group Obra --with a,b` does not fold the flags into
@@ -1016,6 +1066,7 @@ func cmdFake(ctx context.Context, args []string) error {
 	from := fs.String("from", "", "the person writing to you (inbound/audio), or the acting account (contact/group)")
 	with := fs.String("with", "", "comma separated group members")
 	text := fs.String("text", "", "message text, or a transcript to short-circuit whisper")
+	count := fs.Int("count", 10, "history: how many past messages the fake phone holds")
 	positionalArgs, err := parseFlags(fs, rest0)
 	if err != nil {
 		return err
@@ -1051,6 +1102,15 @@ func cmdFake(ctx context.Context, args []string) error {
 			return fmt.Errorf("usage: zap fake audio --as <account> --from <number> <file> [--text <transcript>]")
 		}
 		req.Path = rest[1]
+	case "history":
+		req.Number = *from
+		if req.Number == "" {
+			return fmt.Errorf("usage: zap fake history --as <account> --from <number> [--count N] [text prefix]")
+		}
+		req.Count = *count
+		if len(rest) > 1 {
+			req.Text = strings.Join(rest[1:], " ")
+		}
 	default:
 		return fmt.Errorf("zap fake: unknown action %q", req.Action)
 	}
@@ -1160,4 +1220,6 @@ func zapHome() string {
 }
 
 func defaultSocket() string { return filepath.Join(zapHome(), "zap.sock") }
+func defaultConfig() string { return filepath.Join(zapHome(), "config.toml") }
+func defaultAllow() string  { return filepath.Join(zapHome(), "allow.toml") }
 func defaultDB() string     { return filepath.Join(zapHome(), "store.db") }
