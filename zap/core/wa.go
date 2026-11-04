@@ -81,7 +81,7 @@ func OpenWhatsApp(ctx context.Context, dbPath string, policy *Policy) (*WhatsApp
 		accounts:  map[string]*WhatsApp_Account{},
 		policy:    policy,
 	}
-	w.fol = &Follower{Policy: policy, Phone: w, Archive: w, Bus: w.bus.Publish}
+	w.fol = &Follower{Policy: policy, Phone: w, Archive: rawArchive{w}, Bus: w.bus.Publish}
 	devices, err := container.GetAllDevices(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("read devices: %w", err)
@@ -158,11 +158,11 @@ func (w *WhatsApp) Send(ctx context.Context, req SendRequest) (SendResult, error
 	}
 	// Sending is the owner's act and works for any chat; keeping it is a
 	// different matter: a chat that is not followed is not written down.
-	w.fol.Observe(sent.Chat, Anchor{ID: sent.ID, FromMe: true, At: sent.Timestamp})
-	if w.policy.Admit(sent) {
+	// (no anchor either: a chat that is not followed leaves no trace)
+	if w.policy.Allow.Allowed(sent.Chat) {
+		w.fol.Observe(sent.Chat, Anchor{ID: sent.ID, FromMe: true, At: sent.Timestamp})
 		w.remember(sent)
-		w.bus.Publish(sent)
-		w.policy.Emit(sent)
+		w.publish(sent)
 	}
 	return SendResult{ID: resp.ID, From: from, Timestamp: resp.Timestamp}, nil
 }
@@ -368,7 +368,7 @@ func (w *WhatsApp) Drop(chats []string) (int, error) {
 	for _, chat := range chats {
 		want[NormJID(chat)] = true
 	}
-	for _, chat := range w.Stored() {
+	for _, chat := range w.storedAll() {
 		if !want[NormJID(chat)] {
 			continue
 		}
@@ -394,7 +394,25 @@ func (w *WhatsApp) Drop(chats []string) (int, error) {
 	return total, nil
 }
 
+// rawArchive is the Archive the follower sees: its Stored lists every chat in
+// the table, allowed or not, because purge exists to find the ones that are not.
+type rawArchive struct{ *WhatsApp }
+
+func (r rawArchive) Stored() []string { return r.WhatsApp.storedAll() }
+
+// Stored lists the allowed chats that have stored messages: a stray row, left
+// by an older zap or by an allowlist edit, is not reported (purge finds it).
 func (w *WhatsApp) Stored() []string {
+	var out []string
+	for _, chat := range w.storedAll() {
+		if w.policy.Allow.Allowed(chat) {
+			out = append(out, chat)
+		}
+	}
+	return out
+}
+
+func (w *WhatsApp) storedAll() []string {
 	rows, err := w.db.Query(`SELECT DISTINCT chat FROM messages`)
 	if err != nil {
 		return nil
@@ -447,6 +465,9 @@ func (w *WhatsApp) Messages(ctx context.Context, q MessagesQuery) ([]Event, erro
 		var ts int64
 		if err := rows.Scan(&ev.Chat, &ev.ID, &ev.Sender, &ev.FromMe, &ts, &ev.Text); err != nil {
 			return nil, err
+		}
+		if !w.policy.Allow.Allowed(ev.Chat) {
+			continue // a stray row is not served
 		}
 		ev.Timestamp = time.Unix(ts, 0)
 		out = append(out, ev)
@@ -1196,7 +1217,7 @@ func (w *WhatsApp) noteSession(ev Event) {
 	if prev.Valid && ev.Timestamp.Sub(time.Unix(prev.Int64, 0)) <= gap {
 		return
 	}
-	w.bus.Publish(Event{
+	w.publish(Event{
 		Account: ev.Account, Type: Events.Session.Opened,
 		Chat: ev.Chat, ChatName: ev.ChatName, Timestamp: ev.Timestamp,
 	})
@@ -1244,7 +1265,7 @@ func (w *WhatsApp) sweepSessions(ctx context.Context, publish bool) {
 		if already || !publish {
 			continue
 		}
-		w.bus.Publish(Event{
+		w.publish(Event{
 			Account: account, Type: Events.Session.Closed,
 			Chat: chat, Timestamp: time.Unix(last, 0),
 		})

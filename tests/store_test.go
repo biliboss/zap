@@ -72,6 +72,13 @@ func TestStoreBehindTheDoor(t *testing.T) {
 	if _, _, err := allow.Remove(strangerJID); err != nil {
 		t.Fatal(err)
 	}
+	// the stray row is neither listed nor served
+	if got := wa.Stored(); len(got) != 2 {
+		t.Fatalf("Stored must list only allowed chats, got %v", got)
+	}
+	if msgs, err := wa.Messages(ctx, core.MessagesQuery{Chat: strangerJID}); err == nil && len(msgs) != 0 {
+		t.Fatalf("Messages served a stray row: %v", msgs)
+	}
 	if n := wa.Stray(); n != 1 {
 		t.Fatalf("want 1 stray chat, got %d", n)
 	}

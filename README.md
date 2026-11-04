@@ -85,6 +85,15 @@ pairing, because whatsmeow can send the phone an on-demand history request
 (`BuildHistorySyncRequest`); so zap stores nothing of a chat nobody allowed. The
 limits are in [`zap/CONTEXT.md`](zap/CONTEXT.md).
 
+**Outbound is exempt.** `send`, `typing`, `presence` and `status` work for any
+chat, allowed or not: sending is the owner's own act, not listening. What the
+allowlist still decides is what zap *keeps*: a send to a chat that is not
+followed is not stored, not published and leaves no anchor.
+
+**Receipts.** whatsmeow sends delivery receipts at the protocol level, so the
+sender of a message to a paired number sees it delivered even if its chat is not
+followed. Zap does not store it, but the receipt goes out.
+
 No message text goes to a log, and zap makes no network call besides WhatsApp
 and the backend you configured. There is no telemetry.
 

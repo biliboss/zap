@@ -29,7 +29,7 @@ func (w *WhatsApp) Follows(ctx context.Context) ([]Follow, error) {
 func (w *WhatsApp) Stray() int {
 	keep := w.policy.Allow.keySet()
 	n := 0
-	for _, chat := range w.Stored() {
+	for _, chat := range w.storedAll() {
 		if !keep[NormJID(chat)] {
 			n++
 		}
