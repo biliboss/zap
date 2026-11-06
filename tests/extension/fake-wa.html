@@ -1,0 +1,15 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>fake WhatsApp Web (test only)</title>
+<p>Fake page: a minimal WPP that emits the three events zap's extension listens to.</p>
+<script>
+  // Overrides the real wa-js object the extension injected: this page is not WhatsApp.
+  const handlers = {};
+  window.WPP = {
+    isReady: true,
+    conn: { getMyUserId: () => ({ user: '5511900000000', server: 'c.us', _serialized: '5511900000000@c.us' }) },
+    on(name, fn) { (handlers[name] = handlers[name] || []).push(fn); },
+  };
+  window.__fakeEmit = (name, payload) => (handlers[name] || []).forEach((fn) => fn(payload));
+  window.__fakeBound = () => Object.fromEntries(Object.entries(handlers).map(([k, v]) => [k, v.length]));
+</script>
