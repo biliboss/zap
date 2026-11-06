@@ -2,12 +2,19 @@
 name: zap
 description: Drive WhatsApp from the shell with the `zap` CLI, safely. Connect a number, list chats, follow a person (allow them, backfill the past, sync new messages) or unfollow them, and read what was stored. zap listens to no chat until the owner allows it, and the allowed messages go to the backend the config chooses (ndjson or NATS JetStream). Use when the task touches WhatsApp on this machine ("connect whatsapp", "list my chats", "follow Ana", "stop following", "read my chat with Ana", "send a whatsapp", "react to incoming messages", "zap"). Not a general messaging skill; it needs the zap binary and a linked number.
 metadata:
-  version: 0.2.0
+  version: 0.3.0
 ---
 
 # zap
 
 **One process holds every linked number and serves them over a unix socket; every verb is a thin client of it.** `zap serve` must be running; `scripts/connect.sh` starts it.
+
+## Solutions
+
+Two ways to read WhatsApp, with the same rule (a chat is read only once followed):
+
+- **The zap process** (this skill's `scripts/` + the `zap` binary): reads **and sends**, holds **many numbers** in one process, backends ndjson or NATS. Needs a linked number (QR) and the process running.
+- **The extension** (`extension/`): **reads in the person's own browser**, **local-first, no server**: events stay in `chrome.storage.local`, nothing leaves the browser, it cannot send. Pick it when the person lives in WhatsApp Web and wants nothing running elsewhere. It is not in the Chrome Web Store: see "Extension".
 
 ## The rule that governs everything: zap listens to nobody until you allow it
 
@@ -64,3 +71,19 @@ On a terminal zap prints for a human; through a pipe it prints ndjson on stdout 
 - **The pairing bundle is filtered as it arrives.** `zap serve --history-days` widens what the phone ships at pairing, but only followed chats are kept; the way to one chat's past later is `follow`.
 - **A hand edit of `allow.toml` is picked up live; a broken one is ignored** and the previous list stays, so a typo never opens the door.
 - **Voice notes become text only with `zap serve --transcribe`** (needs `mlx_whisper` or `uvx`); until then they read as `[media]`.
+
+## Extension
+
+`S/extension.sh install|status|update|remove [--browser chrome|chromium|brave|cft] [--method auto|policy|flag|computer-use|manual]` installs `extension/` with what the harness offers. `auto` tries, in order:
+
+1. **policy** (admin user): packs a .crx into `~/.local/share/zap/extension/` (the key stays there, never committed), writes `update.xml` and a managed-preferences plist for `ExtensionInstallForcelist`, and **prints the `sudo` commands for the owner**: you never run sudo. The owner verifies at `chrome://policy`; `S/extension.sh serve` hosts the package for 120 s. On a Mac that is not managed the browser may ignore it: then use flag or manual.
+2. **flag**: launches a separate profile with `--load-extension` (Chromium, Chrome for Testing, Brave). Google Chrome stable dropped the flag in 137, and the script refuses with that reason.
+3. **computer-use** (`ZAP_HAS_COMPUTER_USE=1`): prints a JSON plan (chrome://extensions, Developer mode, Load unpacked, the folder).
+4. **manual**: the 4 clicks, in Portuguese, for the person.
+
+`status` checks for real: the policy plist and the extension id in the profile's `Preferences`/`Secure Preferences`; `--probe` also loads the extension in a throwaway Chromium against a fake WhatsApp page and requires the test events to arrive. `remove` undoes each method (the policy removal is a `sudo` line for the owner).
+
+- **Following is still the owner's decision**: the follow list lives in the extension popup and is empty by default. An agent adds a chat only if the owner named it, and never opens WhatsApp Web to look around.
+- **Logging in to WhatsApp Web (QR) is the owner's**, also in the separate profile of `--method flag`.
+- Events carry the same wire names as `zap tail` (`message_received`, `message_edited`, `message_revoked`) and sit in `chrome.storage.local` key `events` (ring of 2,000); quote the least text, write none to notes or logs.
+- wa-js breaks when WhatsApp Web updates; automated reading is outside WhatsApp's terms of service. Say so if asked.

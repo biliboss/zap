@@ -1,0 +1,9 @@
+zap · WhatsApp Web (read only) extension
+Copyright the zap authors.
+
+This product bundles @wppconnect/wa-js v4.7.2 (vendor/wppconnect-wa.js), unmodified.
+  Project:   https://github.com/wppconnect-team/wa-js
+  Copyright: WPPConnect Team
+  License:   Apache License 2.0 (vendor/LICENSE-wa-js); third-party notices of the bundle
+             are in vendor/wppconnect-wa.js.LICENSE.txt.
+Not affiliated with, or endorsed by, WhatsApp or Meta.

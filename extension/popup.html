@@ -1,0 +1,14 @@
+<!doctype html>
+<meta charset="utf-8">
+<link rel="stylesheet" href="popup.css">
+<h1>zap · read only</h1>
+<p class="hint">Reads only the chats listed here. Empty list = reads nothing. Nothing leaves this browser.</p>
+<ul id="follows"></ul>
+<form id="add">
+  <input id="id" placeholder="number or jid (5511…, …@g.us)" required>
+  <input id="label" placeholder="label (optional)">
+  <button>Follow</button>
+</form>
+<p><span id="count">0</span> stored events <button id="clear">Clear</button></p>
+<script src="follow.js"></script>
+<script src="popup.js"></script>

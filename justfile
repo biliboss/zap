@@ -31,6 +31,12 @@ schema: build
 bench ladder="1,10,100,1000":
     cd bench && go build -o bench . && ./bench -ladder {{ladder}}
 
+# the extension: unit test of update.xml/policy, then the fake WhatsApp page in Chromium
+ext-test:
+    bash -n skills/zap/scripts/extension.sh
+    python3 -I tests/extension/test_policy.py
+    PLAYWRIGHT_BROWSERS_PATH=${ZAP_PW_BROWSERS:-$HOME/.cache/zap-ext-pw} uv run --with playwright python -I tests/extension/test_extension.py
+
 # ------------------------------------------------------------- the daemon
 
 # a sandbox daemon: fake numbers, no phone, no ban risk
